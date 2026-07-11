@@ -146,18 +146,25 @@ export function useBatchVideo({ setError, setSuccess, computedParams } = {}) {
   }, [activeBatchId, fetchBatches, setError, setSuccess, stopPolling]);
 
   const handleCancelBatch = useCallback(async (batchId) => {
+    if (!window.confirm("Cancel this video generation? ComfyUI will stop immediately.")) {
+      return;
+    }
     try {
-      const res = await fetch(`${API_BASE}/batch-video/batch/${batchId}/cancel`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/batch-video/batch/${batchId}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmed: true, source: "video-generator-ui" }),
+      });
       if (res.ok) {
         await fetchBatches();
         if (activeBatchId === batchId) {
           startPollingStatus(batchId);
         }
       }
-    } catch {
-      // ignore
+    } catch (e) {
+      setError?.(`Cancel failed: ${e.message}`);
     }
-  }, [activeBatchId, fetchBatches, startPollingStatus]);
+  }, [activeBatchId, fetchBatches, setError, startPollingStatus]);
 
   const handleRetryBatch = useCallback(async (batchId) => {
     try {

@@ -56,7 +56,7 @@ socketio = SocketIO(
     # lets Flask own the session (this app is sessionless anyway), skipping the broken
     # assignment. No dependency change required.
     manage_session=False,
-    logger=False,  # Disabled to prevent log flooding
-    engineio_logger=False  # Disabled to prevent log flooding
+    logger=True,  # Enabled to diagnose handshake issues
+    engineio_logger=True  # Enabled to diagnose transport issues
 )
 logger = logging.getLogger(__name__)

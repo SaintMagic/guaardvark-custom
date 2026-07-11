@@ -754,6 +754,22 @@ const MusicVideoPage = () => {
       label: "Wan 2.2 14B I2V (GGUF Q5) — Recommended",
       description: "Excellent cinematic motion, ~5s clips, good VRAM efficiency",
     },
+    "wan22-snatchkiss-i2v-gguf-q6": {
+      label: "DaSiWa WAN 2.2 I2V GGUF Q6",
+      description: "High+Low pair, 4-step fast path, practical baseline",
+    },
+    "wan22-snatchkiss-i2v-gguf-q8": {
+      label: "DaSiWa WAN 2.2 I2V GGUF Q8",
+      description: "High+Low pair, 4-step fast path, quality ceiling",
+    },
+    "wan22-snatchkiss-i2v-fp8-pruned": {
+      label: "DaSiWa WAN 2.2 I2V FP8 pruned",
+      description: "High+Low pair, 4-step fast path, pruned safetensors",
+    },
+    "wan22-snatchkiss-i2v-fp8-full": {
+      label: "DaSiWa WAN 2.2 I2V FP8 full",
+      description: "High+Low pair, 4-step fast path, full safetensors",
+    },
     "cogvideox-5b-i2v": {
       label: "CogVideoX 5B I2V",
       description: "Solid alternative I2V (~6s)",

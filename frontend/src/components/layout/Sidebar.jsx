@@ -54,6 +54,7 @@ import MusicVideoIcon from "@mui/icons-material/MusicVideo";
 import BubbleChartIcon from "@mui/icons-material/BubbleChart";
 import PhotoLibraryIcon from "@mui/icons-material/PhotoLibrary";
 import VideoCameraBackIcon from "@mui/icons-material/VideoCameraBack";
+import AutoAwesomeMotionIcon from "@mui/icons-material/AutoAwesomeMotion";
 
 import SystemMetricsModal from "../modals/SystemMetricsModal";
 import AgentScreenViewer from "../agent/AgentScreenViewer";
@@ -87,6 +88,7 @@ const navGroups = [
       { text: "Music Video", icon: <MusicVideoIcon />, path: "/music-video" },
       { text: "Video Editor", icon: <MovieFilterIcon />, path: "/video-editor" },
       { text: "Video Gen", icon: <VideoCameraBackIcon />, path: "/video" },
+      { text: "LTX Director", icon: <AutoAwesomeMotionIcon />, path: "/ltx-director" },
       { text: "Image Gen", icon: <ImageIcon />, path: "/batch-images" },
       { text: "Audio Studio", icon: <GraphicEqIcon />, path: "/audio" },
       { text: "Video Text", icon: <TextFieldsIcon />, path: "/video-text-overlay" },

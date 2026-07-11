@@ -384,7 +384,7 @@ def model_health():
         return error_response("Active model not configured", 503, "NOT_CONFIGURED")
     try:
         resp = requests.post(
-            f"{OLLAMA_BASE_URL}/api/show", json={"name": model_name}, timeout=10
+            f"{OLLAMA_BASE_URL}/api/show", json={"name": model_name}, timeout=1.0
         )
         available = bool(resp.ok)
     except requests.RequestException as e:
@@ -417,7 +417,7 @@ def model_status():
                     # Current model is vision-capable, check if it's loaded
                     try:
                         resp = requests.post(
-                            f"{OLLAMA_BASE_URL}/api/show", json={"name": text_model}, timeout=5
+                            f"{OLLAMA_BASE_URL}/api/show", json={"name": text_model}, timeout=1.0
                         )
                         vision_loaded = bool(resp.ok)
                         logger.debug(f"Text model '{text_model}' is vision-capable and loaded: {vision_loaded}")
@@ -429,7 +429,7 @@ def model_status():
                     vision_model = "llava"  # Fallback to separate vision model
                     try:
                         resp = requests.post(
-                            f"{OLLAMA_BASE_URL}/api/show", json={"name": vision_model}, timeout=5
+                            f"{OLLAMA_BASE_URL}/api/show", json={"name": vision_model}, timeout=1.0
                         )
                         vision_loaded = bool(resp.ok)
                         logger.debug(f"Separate vision model '{vision_model}' loaded: {vision_loaded}")
@@ -443,7 +443,7 @@ def model_status():
                 vision_model = "llava"
                 try:
                     resp = requests.post(
-                        f"{OLLAMA_BASE_URL}/api/show", json={"name": vision_model}, timeout=5
+                        f"{OLLAMA_BASE_URL}/api/show", json={"name": vision_model}, timeout=1.0
                     )
                     vision_loaded = bool(resp.ok)
                 except (requests.RequestException, requests.Timeout, ConnectionError) as e:
@@ -458,7 +458,7 @@ def model_status():
         try:
             # Try to check if sdxl is available
             resp = requests.post(
-                f"{OLLAMA_BASE_URL}/api/show", json={"name": image_gen_model}, timeout=5
+                f"{OLLAMA_BASE_URL}/api/show", json={"name": image_gen_model}, timeout=1.0
             )
             image_gen_loaded = bool(resp.ok)
         except (requests.RequestException, requests.Timeout, ConnectionError) as e:
@@ -499,7 +499,7 @@ def get_resources():
         out = subprocess.check_output(
             ["nvidia-smi", "--query-gpu=memory.free,memory.total",
              "--format=csv,nounits,noheader"],
-            timeout=5, text=True,
+            timeout=1.0, text=True,
         )
         parts = out.strip().split(",")
         if len(parts) == 2:
@@ -589,7 +589,7 @@ def get_resources():
 def list_embedding_models():
     """List available embedding models from Ollama."""
     try:
-        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=10)
+        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=1.0)
         response.raise_for_status()
         all_models = response.json().get("models", [])
     except Exception as e:
@@ -606,7 +606,7 @@ def list_embedding_models():
             try:
                 detail_resp = requests.post(
                     f"{OLLAMA_BASE_URL}/api/show",
-                    json={"name": m.get("name")}, timeout=5
+                    json={"name": m.get("name")}, timeout=1.0
                 )
                 if detail_resp.ok:
                     show_data = detail_resp.json()
@@ -655,7 +655,7 @@ def set_embedding_model():
     # Verify model exists in Ollama
     try:
         resp = requests.post(
-            f"{OLLAMA_BASE_URL}/api/show", json={"name": model_name}, timeout=10
+            f"{OLLAMA_BASE_URL}/api/show", json={"name": model_name}, timeout=1.0
         )
         if not resp.ok:
             return error_response(f"Model '{model_name}' not found in Ollama", 404, "NOT_FOUND")

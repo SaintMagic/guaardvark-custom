@@ -161,7 +161,6 @@ export default defineConfig(({ mode }) => {
       plugins: [rollupNodePolyFill()],
       output: {
         manualChunks: {
-          vendor: ['react', 'react-dom'],
           mui: ['@mui/material', '@mui/icons-material', '@emotion/react', '@emotion/styled'],
           routing: ['react-router-dom'],
           api: ['axios', 'socket.io-client'],
@@ -183,6 +182,9 @@ export default defineConfig(({ mode }) => {
     host: '0.0.0.0',
     port: parseInt(vitePort, 10),
     strictPort: true,
+    hmr: {
+      overlay: false
+    },
     allowedHosts,
     proxy,
   },

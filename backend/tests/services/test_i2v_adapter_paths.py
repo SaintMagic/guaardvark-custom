@@ -61,3 +61,29 @@ def test_adapter_resolves_relative_video_path(tmp_path, monkeypatch, Adapter):
     assert out_path.read_bytes() == b"VIDEO"
     # The adapter set output_dir to the output_path's parent (a known base).
     assert Path(captured["output_dir"]) == out_path.parent
+
+
+def test_wan_fp8_full_uses_core_unetloader(monkeypatch):
+    monkeypatch.setattr(cvg.ComfyUIVideoGenerator, "_check_comfyui_connection", lambda self: False)
+    gen = cvg.ComfyUIVideoGenerator()
+    wf = gen._create_wan22_i2v_workflow(
+        image_filename="input.png",
+        prompt="test",
+        model_key="wan22-snatchkiss-i2v-fp8-full",
+    )
+    assert wf["1"]["class_type"] == "UNETLoader"
+    assert wf["2"]["class_type"] == "UNETLoader"
+    assert wf["1"]["inputs"]["weight_dtype"] == "default"
+    assert wf["2"]["inputs"]["weight_dtype"] == "default"
+
+
+def test_wan_gguf_uses_gguf_loader(monkeypatch):
+    monkeypatch.setattr(cvg.ComfyUIVideoGenerator, "_check_comfyui_connection", lambda self: False)
+    gen = cvg.ComfyUIVideoGenerator()
+    wf = gen._create_wan22_i2v_workflow(
+        image_filename="input.png",
+        prompt="test",
+        model_key="wan22-snatchkiss-i2v-gguf-q6",
+    )
+    assert wf["1"]["class_type"] == "UnetLoaderGGUF"
+    assert wf["2"]["class_type"] == "UnetLoaderGGUF"

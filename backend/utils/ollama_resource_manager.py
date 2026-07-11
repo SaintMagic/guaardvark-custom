@@ -100,7 +100,7 @@ def get_system_resources() -> Dict[str, float]:
             out = subprocess.check_output(
                 ["nvidia-smi", "--query-gpu=memory.free,memory.total",
                  "--format=csv,nounits,noheader"],
-                timeout=5, text=True,
+                timeout=1.0, text=True,
             )
             parts = out.strip().split(",")
             if len(parts) == 2:
@@ -153,7 +153,7 @@ def get_model_info(model_name: str) -> Optional[dict]:
         resp = requests.post(
             f"{base_url}/api/show",
             json={"name": model_name},
-            timeout=10,
+            timeout=1.0,
         )
         if not resp.ok:
             logger.debug("Ollama /api/show returned %d for '%s'", resp.status_code, model_name)
@@ -191,7 +191,7 @@ def get_model_info(model_name: str) -> Optional[dict]:
         # Get model file size — /api/show doesn't include 'size', so check /api/tags
         size_bytes = 0
         try:
-            tags_resp = requests.get(f"{base_url}/api/tags", timeout=5)
+            tags_resp = requests.get(f"{base_url}/api/tags", timeout=1.0)
             if tags_resp.ok:
                 for m in tags_resp.json().get("models", []):
                     if m.get("name", "").lower() == model_name.lower():

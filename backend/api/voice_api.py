@@ -1635,15 +1635,17 @@ def voice_status():
         # Check FFmpeg availability
         ffmpeg_available = shutil.which("ffmpeg") is not None
 
-        # Check Piper TTS availability
-        piper_available = True
+        # TTS is usable as soon as Piper imports cleanly and at least one voice
+        # model exists locally. Requiring every configured voice to be present
+        # misreports healthy installs as unavailable.
+        piper_available = False
         available_voices = []
         for voice_id, voice_config in PIPER_VOICES.items():
             model_path = os.path.join(backend_path, voice_config["model"])
             if os.path.exists(model_path):
                 available_voices.append(voice_id)
-            else:
-                piper_available = False
+        if available_voices:
+            piper_available = True
 
         # Test Piper import
         try:

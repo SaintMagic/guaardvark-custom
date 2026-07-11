@@ -872,17 +872,19 @@ const UpscalingPage = ({ embedded = false }) => {
                           <Box sx={{ mt: 1.5 }}>
                             <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.5 }}>
                               <Typography variant="caption" color="text.secondary">
-                                Frame {job.current_frame || 0} / {job.total_frames || "?"}
+                                Frame {job.frames_done ?? job.current_frame ?? 0} / {job.frames_total ?? job.total_frames ?? "?"}
                               </Typography>
                               <Typography variant="caption" color="text.secondary">
-                                {job.total_frames > 0
-                                  ? `${Math.round(((job.current_frame || 0) / job.total_frames) * 100)}%`
+                                {(job.frames_total ?? job.total_frames) > 0
+                                  ? `${Math.round(((job.frames_done ?? job.current_frame ?? 0) / (job.frames_total ?? job.total_frames)) * 100)}%`
                                   : ""}
                               </Typography>
                             </Stack>
                             <LinearProgress
-                              variant={job.total_frames > 0 ? "determinate" : "indeterminate"}
-                              value={job.total_frames > 0 ? ((job.current_frame || 0) / job.total_frames) * 100 : 0}
+                              variant={(job.frames_total ?? job.total_frames) > 0 ? "determinate" : "indeterminate"}
+                              value={(job.frames_total ?? job.total_frames) > 0
+                                ? ((job.frames_done ?? job.current_frame ?? 0) / (job.frames_total ?? job.total_frames)) * 100
+                                : 0}
                             />
                           </Box>
                         )}

@@ -719,8 +719,32 @@ def _looks_like_node_handshake(request) -> bool:
 @socketio.on("connect")
 def on_connect(auth=None):
     """Gate cluster node-to-node handshakes behind api_key; browser sessions pass through."""
-    if not _cluster_auth_check(auth):
+    from flask import request as _socket_request
+    origin = _socket_request.headers.get("Origin", "")
+    transport = _socket_request.args.get("transport", "unknown")
+    sid = getattr(_socket_request, "sid", "unknown")
+    auth_keys = sorted(auth.keys()) if isinstance(auth, dict) else []
+    logger.info(
+        "[SOCKET-HANDSHAKE] connect sid=%s origin=%s transport=%s auth_keys=%s remote=%s",
+        sid,
+        origin or "<none>",
+        transport,
+        auth_keys,
+        _socket_request.remote_addr,
+    )
+    allowed = _cluster_auth_check(auth)
+    if not allowed:
+        logger.warning(
+            "[SOCKET-HANDSHAKE] rejected sid=%s origin=%s transport=%s "
+            "cookies=%s api_key=%s",
+            sid,
+            origin or "<none>",
+            transport,
+            bool(_socket_request.cookies),
+            bool((auth or {}).get("api_key") if isinstance(auth, dict) else False),
+        )
         return False
+    logger.info("[SOCKET-HANDSHAKE] accepted sid=%s origin=%s", sid, origin or "<none>")
     return True
 
 
@@ -751,6 +775,11 @@ def handle_cluster_routing_table(data):
 def handle_disconnect():
     """Clean up any open cluster bridge when a client disconnects."""
     from flask import request
+    logger.info(
+        "[SOCKET-HANDSHAKE] disconnect sid=%s reason=%s",
+        getattr(request, "sid", "unknown"),
+        getattr(request, "event", {}).get("message", "unknown") if hasattr(request, "event") else "unknown",
+    )
     try:
         from backend.services.cluster_socketio_bridge import SocketIOBridgeRegistry
         SocketIOBridgeRegistry.close_for_session(request.sid)

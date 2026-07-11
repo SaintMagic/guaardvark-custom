@@ -229,6 +229,34 @@ scripts/seed_social_outreach_tasks.py
 
 # Local-only notes and scripts (never pushed) 
 GUAARDVARK.md
+/.audit_diff_snapshots/
+/_backups/
+/.launcher-venv/
+/.start_cache/
+/backend/venv-test/
+/backend/venv
+/plugins/comfyui/.venv-windows/
+/data/piptmp/
+/data/active_model.json
+/data/*_windows_state.json
+/cli/*.egg-info/
+/cli/guaardvark.egg-info
+/scripts/generate_*audit_diff.py
+/scripts/install_all_models.py
+/scripts/wsl_*_venv.sh
+/scripts/wsl_start_launcher_services.sh
+/AUDIT_DIFF*.md
+/LTX_DIRECTOR*.diff
+/IMPLEMENTATION_PLAN.md
+/LTX WF files/
+/potential WF/
+/recovered_from_linux/
+/guaardvark/
+/plugins/comfyui/.custom_nodes_installed
+/err.txt
+/out.txt
+/temp_out.txt
+/test_backend.log
 
 # Google Indexing service-account key
 data/credentials/

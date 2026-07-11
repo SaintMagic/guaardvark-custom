@@ -83,6 +83,52 @@ import {
 
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
+const VIDEO_SETTINGS_STORAGE_KEY = "guaardvark.videoGenerator.lastSettings.v1";
+
+const loadSavedVideoSettings = () => {
+  try {
+    const raw = localStorage.getItem(VIDEO_SETTINGS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const saveVideoSettings = (settings) => {
+  try {
+    localStorage.setItem(VIDEO_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // localStorage may be blocked in private/sandboxed contexts.
+  }
+};
+
+const formatUiError = (value, fallback = "Something went wrong.") => {
+  if (value == null || value === "") return fallback;
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return value.message || fallback;
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((item) => formatUiError(item, ""))
+      .filter(Boolean);
+    return parts.length > 0 ? parts.join(" | ") : fallback;
+  }
+  if (typeof value === "object") {
+    if (typeof value.message === "string" && value.message.trim()) {
+      if (typeof value.code === "string" && value.code.trim()) {
+        return `${value.code}: ${value.message}`;
+      }
+      return value.message;
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return fallback;
+    }
+  }
+  return String(value);
+};
 
 const formatVideoDate = (isoStr) => {
   if (!isoStr) return null;
@@ -105,12 +151,15 @@ const formatVideoDate = (isoStr) => {
 const VideoModelsModal = React.lazy(() => import("../components/modals/VideoModelsModal"));
 
 const VideoGeneratorPage = ({ embedded = false }) => {
-  const [inputMode, setInputMode] = useState("text");
-  const [promptsText, setPromptsText] = useState("");
+  const savedSettingsRef = useRef(loadSavedVideoSettings());
+  const savedSettings = savedSettingsRef.current;
+
+  const [inputMode, setInputMode] = useState(savedSettings.inputMode || "text");
+  const [promptsText, setPromptsText] = useState(savedSettings.promptsText || "");
   const [videoModelsModalOpen, setVideoModelsModalOpen] = useState(false);
 
   // Image selection state
-  const [selectedImages, setSelectedImages] = useState([]); // Array of {id, path, thumbnailUrl, name}
+  const [selectedImages, setSelectedImages] = useState(savedSettings.selectedImages || []); // Array of {id, path, thumbnailUrl, name}
   const [dragActive, setDragActive] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef(null);
@@ -125,27 +174,28 @@ const VideoGeneratorPage = ({ embedded = false }) => {
   const [gallerySelectedImages, setGallerySelectedImages] = useState(new Set());
 
   // Preset selections
-  const [qualityPreset, setQualityPreset] = useState("standard");
-  const [durationPreset, setDurationPreset] = useState("short");
-  const [motionPreset, setMotionPreset] = useState("normal");
-  const [model, setModel] = useState(DEFAULT_T2V_MODEL);
-  const [aspectRatio, setAspectRatio] = useState("16:9");
-  const [videoSize, setVideoSize] = useState("large");
-  const [qualityTier, setQualityTier] = useState("standard");
-  const [promptStyle, setPromptStyle] = useState("cinematic");
-  const [enhancePrompt, setEnhancePrompt] = useState(true);
-  const [fidelityMode, setFidelityMode] = useState(false); // "Exact text mode" / preserve fidelity — light enhancement only
+  const [qualityPreset, setQualityPreset] = useState(savedSettings.qualityPreset || "standard");
+  const [durationPreset, setDurationPreset] = useState(savedSettings.durationPreset || "short");
+  const [motionPreset, setMotionPreset] = useState(savedSettings.motionPreset || "normal");
+  const [model, setModel] = useState(savedSettings.model || (savedSettings.inputMode === "image" ? DEFAULT_I2V_MODEL : DEFAULT_T2V_MODEL));
+  const [aspectRatio, setAspectRatio] = useState(savedSettings.aspectRatio || "16:9");
+  const [videoSize, setVideoSize] = useState(savedSettings.videoSize || "large");
+  const [qualityTier, setQualityTier] = useState(savedSettings.qualityTier || "standard");
+  const [promptStyle, setPromptStyle] = useState(savedSettings.promptStyle || "cinematic");
+  const [enhancePrompt, setEnhancePrompt] = useState(savedSettings.enhancePrompt ?? true);
+  const [fidelityMode, setFidelityMode] = useState(savedSettings.fidelityMode ?? false); // "Exact text mode" / preserve fidelity — light enhancement only
   // Quality pipeline (v2.6.2 — ported from the music-video generator). Opt-in.
-  const [directorMode, setDirectorMode] = useState(false);          // rewrite each prompt via the cinematic Director
-  const [cinematicKeyframe, setCinematicKeyframe] = useState(false); // FLUX still -> Wan2.2 I2V per clip (slower, sharper)
-  const [directorGuidance, setDirectorGuidance] = useState("");      // optional free-text steer for the Director
-  const [storyboardMode, setStoryboardMode] = useState(false);       // one concept -> N director-written shots
-  const [storyboardShots, setStoryboardShots] = useState(6);
-  const [keyframeModel, setKeyframeModel] = useState(DEFAULT_KEYFRAME_MODEL);
-  const [highConsistencyMode, setHighConsistencyMode] = useState(false);
-  const [postUpscale, setPostUpscale] = useState(false); // independent 2x upscale (quality post-processing)
+  const [directorMode, setDirectorMode] = useState(savedSettings.directorMode ?? false);          // rewrite each prompt via the cinematic Director
+  const [cinematicKeyframe, setCinematicKeyframe] = useState(savedSettings.cinematicKeyframe ?? false); // FLUX still -> Wan2.2 I2V per clip (slower, sharper)
+  const [directorGuidance, setDirectorGuidance] = useState(savedSettings.directorGuidance || "");      // optional free-text steer for the Director
+  const [storyboardMode, setStoryboardMode] = useState(savedSettings.storyboardMode ?? false);       // one concept -> N director-written shots
+  const [storyboardShots, setStoryboardShots] = useState(savedSettings.storyboardShots || 6);
+  const [keyframeModel, setKeyframeModel] = useState(savedSettings.keyframeModel || DEFAULT_KEYFRAME_MODEL);
+  const [highConsistencyMode, setHighConsistencyMode] = useState(savedSettings.highConsistencyMode ?? false);
+  const [postUpscale, setPostUpscale] = useState(savedSettings.postUpscale ?? false); // independent 2x upscale (quality post-processing)
   const [faceRestoreNodeAvailable, setFaceRestoreNodeAvailable] = useState(null);
   const [faceRestoreModelReady, setFaceRestoreModelReady] = useState(null);
+  const [comfyuiRunning, setComfyuiRunning] = useState(null);
   const faceRestoreAvailable =
     faceRestoreNodeAvailable === true && faceRestoreModelReady === true;
 
@@ -155,9 +205,10 @@ const VideoGeneratorPage = ({ embedded = false }) => {
   const [showPreview, setShowPreview] = useState(false);
 
   // Batch-wide prompt modifiers (mirror BatchImageGen's "Look & Feel" pattern)
-  const [lookAndFeel, setLookAndFeel] = useState("");
-  const [negativePrompt, setNegativePrompt] = useState("");
+  const [lookAndFeel, setLookAndFeel] = useState(savedSettings.lookAndFeel || "");
+  const [negativePrompt, setNegativePrompt] = useState(savedSettings.negativePrompt || "");
   const [lowVramMode, setLowVramMode] = useState(() => {
+    if (typeof savedSettings.lowVramMode === "boolean") return savedSettings.lowVramMode;
     const saved = localStorage.getItem('lowVramMode');
     // Default to TRUE for 16GB GPUs to prevent CUDA memory errors
     return saved !== null ? saved === 'true' : true;
@@ -174,7 +225,13 @@ const VideoGeneratorPage = ({ embedded = false }) => {
     face_restore: false,
     lora_name: "",
     lora_strength: 1.0,
+    ...(savedSettings.advancedParams && typeof savedSettings.advancedParams === "object"
+      ? savedSettings.advancedParams
+      : {}),
   });
+  const [guidanceScaleOverridden, setGuidanceScaleOverridden] = useState(
+    savedSettings.guidanceScaleOverridden ?? false
+  );
 
   // Cast picker: trained character Subjects whose SDXL LoRA locks identity into a
   // cinematic keyframe (the video model can't apply a LoRA — identity rides in the
@@ -203,8 +260,70 @@ const VideoGeneratorPage = ({ embedded = false }) => {
   }, []);
 
   // CogVideoX temporal-coherence feature (quality, not speed)
-  const [fetaEnabled, setFetaEnabled] = useState(false);
-  const [fetaWeight, setFetaWeight] = useState(1.0);
+  const [fetaEnabled, setFetaEnabled] = useState(savedSettings.fetaEnabled ?? false);
+  const [fetaWeight, setFetaWeight] = useState(savedSettings.fetaWeight ?? 1.0);
+
+  useEffect(() => {
+    saveVideoSettings({
+      inputMode,
+      promptsText,
+      selectedImages,
+      lookAndFeel,
+      negativePrompt,
+      model,
+      qualityPreset,
+      durationPreset,
+      motionPreset,
+      aspectRatio,
+      videoSize,
+      qualityTier,
+      promptStyle,
+      enhancePrompt,
+      fidelityMode,
+      directorMode,
+      cinematicKeyframe,
+      directorGuidance,
+      storyboardMode,
+      storyboardShots,
+      keyframeModel,
+      highConsistencyMode,
+      postUpscale,
+      lowVramMode,
+      advancedParams,
+      guidanceScaleOverridden,
+      fetaEnabled,
+      fetaWeight,
+    });
+  }, [
+    inputMode,
+    promptsText,
+    selectedImages,
+    lookAndFeel,
+    negativePrompt,
+    model,
+    qualityPreset,
+    durationPreset,
+    motionPreset,
+    aspectRatio,
+    videoSize,
+    qualityTier,
+    promptStyle,
+    enhancePrompt,
+    fidelityMode,
+    directorMode,
+    cinematicKeyframe,
+    directorGuidance,
+    storyboardMode,
+    storyboardShots,
+    keyframeModel,
+    highConsistencyMode,
+    postUpscale,
+    lowVramMode,
+    advancedParams,
+    guidanceScaleOverridden,
+    fetaEnabled,
+    fetaWeight,
+  ]);
 
   // Cast selection implies cinematic keyframe on the backend — mirror that in the UI.
   // Character LoRAs are SDXL-trained; backend forces the SDXL keyframe branch.
@@ -271,6 +390,7 @@ const VideoGeneratorPage = ({ embedded = false }) => {
       let modelOk = false;
       if (gpuRes.ok) {
         const gpu = await gpuRes.json();
+        setComfyuiRunning(gpu?.data?.comfyui_running === true);
         nodeOk = gpu?.data?.face_restore_node_available === true;
         setFaceRestoreNodeAvailable(nodeOk);
       }
@@ -290,6 +410,8 @@ const VideoGeneratorPage = ({ embedded = false }) => {
 
   useEffect(() => {
     refreshFaceRestoreStatus();
+    const intervalId = setInterval(refreshFaceRestoreStatus, 5000);
+    return () => clearInterval(intervalId);
   }, [refreshFaceRestoreStatus]);
 
   // Sync guidance scale to model-family defaults when the model changes.
@@ -297,9 +419,11 @@ const VideoGeneratorPage = ({ embedded = false }) => {
     const family = MODEL_OPTIONS[model]?.type;
     const defaultCfg = MODEL_DEFAULT_GUIDANCE[family];
     if (defaultCfg != null) {
-      setAdvancedParams((prev) => ({ ...prev, guidance_scale: defaultCfg }));
+      if (!guidanceScaleOverridden) {
+        setAdvancedParams((prev) => ({ ...prev, guidance_scale: defaultCfg }));
+      }
     }
-  }, [model]);
+  }, [model, guidanceScaleOverridden]);
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState("");
@@ -342,7 +466,12 @@ const VideoGeneratorPage = ({ embedded = false }) => {
         setAnyModelReady(vids.some(m => m.is_ready));
         const meta = {};
         vids.forEach(m => {
-          meta[m.id] = { is_ready: m.is_ready, missing_files: m.missing_files || [], name: m.name };
+          meta[m.id] = {
+            is_ready: m.is_ready,
+            missing_files: m.missing_files || [],
+            name: m.name,
+            capabilities: m.capabilities || {},
+          };
         });
         setModelMeta(meta);
         // If a previously-flagged model is now ready, retract the banner.
@@ -392,6 +521,22 @@ const VideoGeneratorPage = ({ embedded = false }) => {
     });
   }, [inputMode, apiModelIds]);
 
+  const cinemaPlusAvailable = Boolean(
+    isWanModel(model) && modelMeta[model]?.capabilities?.cinema_plus === true
+  );
+  const outputQualityOptions = useMemo(
+    () => Object.entries(OUTPUT_QUALITY_TIERS).filter(
+      ([key]) => key !== "cinema_plus" || cinemaPlusAvailable
+    ),
+    [cinemaPlusAvailable]
+  );
+
+  useEffect(() => {
+    if (qualityTier === "cinema_plus" && !cinemaPlusAvailable) {
+      setQualityTier("standard");
+    }
+  }, [qualityTier, cinemaPlusAvailable]);
+
   // Auto-select best model when input mode changes
   useEffect(() => {
     const currentConfig = MODEL_OPTIONS[model];
@@ -408,6 +553,12 @@ const VideoGeneratorPage = ({ embedded = false }) => {
     if (isWanModel(model)) return WAN_DURATION_PRESETS;
     return COGVIDEOX_DURATION_PRESETS;  // cogvideox (svd retired)
   }, [model]);
+
+  useEffect(() => {
+    if (!durationPresets[durationPreset]) {
+      setDurationPreset("short");
+    }
+  }, [durationPreset, durationPresets]);
 
   // Calculate video dimensions from aspect ratio and size
   const videoDimensions = useMemo(() => {
@@ -463,6 +614,8 @@ const VideoGeneratorPage = ({ embedded = false }) => {
     if (advancedParams.num_inference_steps !== null && advancedParams.num_inference_steps !== undefined) {
       // User explicitly set steps in advanced settings
       effectiveSteps = advancedParams.num_inference_steps;
+    } else if (modelConfig.forceRecommendedSteps && typeof modelConfig.defaultSteps === "number") {
+      effectiveSteps = modelConfig.defaultSteps;
     } else if (quality.num_inference_steps) {
       // Use quality preset's steps (this is what user selected in dropdown)
       effectiveSteps = quality.num_inference_steps;
@@ -470,6 +623,10 @@ const VideoGeneratorPage = ({ embedded = false }) => {
       // Fall back to model default only if quality preset doesn't specify
       effectiveSteps = modelConfig.defaultSteps || 25;
     }
+
+    const effectiveGuidance = !guidanceScaleOverridden && modelConfig.forceRecommendedGuidance && typeof modelConfig.defaultGuidance === "number"
+      ? modelConfig.defaultGuidance
+      : advancedParams.guidance_scale;
 
     // CogVideoX is unusually step-sensitive — anything below ~50 produces visibly
     // smeared / underbaked output regardless of the rest of the params. Floor it
@@ -511,7 +668,7 @@ const VideoGeneratorPage = ({ embedded = false }) => {
 
     // Low VRAM safe preset for Wan 2.2 on 16GB GPUs
     // GGUF Q5 is already memory-efficient; moderate clamping
-    if (lowVramMode && isWanModel(model)) {
+    if (lowVramMode && isWanModel(model) && !modelConfig.skipLowVramClamp) {
       // Clamp frames to short duration to reduce memory
       if (effectiveDurationFrames > 33) {
         effectiveDurationFrames = 33;
@@ -539,7 +696,7 @@ const VideoGeneratorPage = ({ embedded = false }) => {
     // At 1280+ the model needs breathing room, so we cap steps and frames
     // unless the user explicitly overrode them in advanced settings.
     const isHighRes = Math.max(width, height) >= 1280;
-    if (isHighRes && !lowVramMode) {
+    if (isHighRes && !lowVramMode && !modelConfig.skipLowVramClamp) {
       // Cap steps — more pixels per step means fewer steps needed for quality
       const userOverrodeSteps = advancedParams.num_inference_steps !== null && advancedParams.num_inference_steps !== undefined;
       if (!userOverrodeSteps && effectiveSteps > 30) {
@@ -571,7 +728,8 @@ const VideoGeneratorPage = ({ embedded = false }) => {
       width,
       height,
       num_inference_steps: effectiveSteps,
-      guidance_scale: advancedParams.guidance_scale,
+      guidance_scale: effectiveGuidance,
+      guidance_scale_overridden: guidanceScaleOverridden,
       generate_frames_only: advancedParams.generate_frames_only,
       frames_per_batch: lowVramMode && (isCogVideoXModel(model) || isWanModel(model)) ? 1 : advancedParams.frames_per_batch,
       combine_frames: advancedParams.combine_frames,
@@ -581,7 +739,9 @@ const VideoGeneratorPage = ({ embedded = false }) => {
       lora_strength: advancedParams.lora_strength,
       subject_ids: selectedSubjectIds,
       interpolation_multiplier: tier.interpolation,
-      upscale: tier.upscale || postUpscale,
+      // Cinema+ owns its RTX VSR stage; do not accidentally stack the legacy
+      // Real-ESRGAN stage when restoring an older saved form.
+      upscale: qualityTier === "cinema_plus" ? false : tier.upscale || postUpscale,
       prompt_style: promptStyle,
       enhance_prompt: enhancePrompt,
       director_mode: directorMode,
@@ -592,9 +752,10 @@ const VideoGeneratorPage = ({ embedded = false }) => {
         ...(useKeyframePath ? { keyframe_model: keyframeModel } : {}),
         // Q1: animate this exact approved still as the I2V start frame (full-quality parity).
         ...(selectedKeyframeSampleId ? { keyframe_sample_id: selectedKeyframeSampleId } : {}),
+        cinema_plus: qualityTier === "cinema_plus" && cinemaPlusAvailable,
       },
     };
-  }, [qualityPreset, durationPreset, motionPreset, model, advancedParams, videoDimensions, lowVramMode, qualityTier, promptStyle, enhancePrompt, directorMode, cinematicKeyframe, directorGuidance, fetaEnabled, fetaWeight, selectedSubjectIds, keyframeModel, postUpscale, highConsistencyMode, selectedKeyframeSampleId]);
+  }, [qualityPreset, durationPreset, motionPreset, model, advancedParams, guidanceScaleOverridden, videoDimensions, lowVramMode, qualityTier, cinemaPlusAvailable, promptStyle, enhancePrompt, directorMode, cinematicKeyframe, directorGuidance, fetaEnabled, fetaWeight, selectedSubjectIds, keyframeModel, postUpscale, highConsistencyMode, selectedKeyframeSampleId]);
 
   const {
     activeBatchId,
@@ -894,8 +1055,10 @@ const VideoGeneratorPage = ({ embedded = false }) => {
       const uiConfig = {
         inputMode, promptsText, lookAndFeel, model,
         qualityPreset, durationPreset, motionPreset, aspectRatio, videoSize,
-        promptStyle, cinematicKeyframe, fidelityMode, negativePrompt,
-        storyboardMode, storyboardShots, lowVramMode, advancedParams,
+        qualityTier, promptStyle, enhancePrompt, directorMode, cinematicKeyframe,
+        fidelityMode, negativePrompt, storyboardMode, storyboardShots,
+        keyframeModel, highConsistencyMode, postUpscale, lowVramMode,
+        advancedParams, guidanceScaleOverridden, fetaEnabled, fetaWeight,
       };
 
       const body =
@@ -923,13 +1086,13 @@ const VideoGeneratorPage = ({ embedded = false }) => {
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
-        setError(errorData.error || `Failed to queue batch: HTTP ${res.status}`);
+        setError(formatUiError(errorData.error, `Failed to queue batch: HTTP ${res.status}`));
         return;
       }
 
       const data = await res.json();
       if (!data.success) {
-        setError(data.error || "Failed to queue batch");
+        setError(formatUiError(data.error, "Failed to queue batch"));
         return;
       }
 
@@ -976,14 +1139,23 @@ const VideoGeneratorPage = ({ embedded = false }) => {
         if (cfg.motionPreset) setMotionPreset(cfg.motionPreset);
         if (cfg.aspectRatio) setAspectRatio(cfg.aspectRatio);
         if (cfg.videoSize) setVideoSize(cfg.videoSize);
+        if (cfg.qualityTier) setQualityTier(cfg.qualityTier);
         if (cfg.promptStyle) setPromptStyle(cfg.promptStyle);
+        if (typeof cfg.enhancePrompt === "boolean") setEnhancePrompt(cfg.enhancePrompt);
+        if (typeof cfg.directorMode === "boolean") setDirectorMode(cfg.directorMode);
         if (typeof cfg.cinematicKeyframe === "boolean") setCinematicKeyframe(cfg.cinematicKeyframe);
         if (typeof cfg.fidelityMode === "boolean") setFidelityMode(cfg.fidelityMode);
         if (typeof cfg.negativePrompt === "string") setNegativePrompt(cfg.negativePrompt);
         if (typeof cfg.storyboardMode === "boolean") setStoryboardMode(cfg.storyboardMode);
         if (cfg.storyboardShots) setStoryboardShots(cfg.storyboardShots);
+        if (cfg.keyframeModel) setKeyframeModel(cfg.keyframeModel);
+        if (typeof cfg.highConsistencyMode === "boolean") setHighConsistencyMode(cfg.highConsistencyMode);
+        if (typeof cfg.postUpscale === "boolean") setPostUpscale(cfg.postUpscale);
         if (typeof cfg.lowVramMode === "boolean") setLowVramMode(cfg.lowVramMode);
+        if (typeof cfg.guidanceScaleOverridden === "boolean") setGuidanceScaleOverridden(cfg.guidanceScaleOverridden);
         if (cfg.advancedParams && typeof cfg.advancedParams === "object") setAdvancedParams(cfg.advancedParams);
+        if (typeof cfg.fetaEnabled === "boolean") setFetaEnabled(cfg.fetaEnabled);
+        if (typeof cfg.fetaWeight === "number") setFetaWeight(cfg.fetaWeight);
         setSuccess(`Loaded "${name}" settings into the panel — adjust anything, then Generate.`);
       } else {
         // Older batch (no snapshot): restore the core from the stored params.
@@ -1005,6 +1177,7 @@ const VideoGeneratorPage = ({ embedded = false }) => {
           frames_per_batch: p.frames_per_batch ?? prev.frames_per_batch,
           combine_frames: !!p.combine_frames,
         }));
+        if (p.guidance_scale !== undefined) setGuidanceScaleOverridden(true);
         setSuccess(`Loaded "${name}" core settings (older batch — double-check resolution/duration).`);
       }
       setError("");
@@ -1090,7 +1263,7 @@ const VideoGeneratorPage = ({ embedded = false }) => {
       {/* Error/Success Messages */}
       {error && (
         <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError('')}>
-          {error}
+          {formatUiError(error)}
         </Alert>
       )}
 
@@ -1909,7 +2082,7 @@ const VideoGeneratorPage = ({ embedded = false }) => {
                     onChange={(e) => setQualityTier(e.target.value)}
                     label="Output Quality"
                   >
-                    {Object.entries(OUTPUT_QUALITY_TIERS).map(([key, tier]) => (
+                    {outputQualityOptions.map(([key, tier]) => (
                       <MenuItem key={key} value={key}>
                         <Box>
                           <Typography variant="body2">{tier.label}</Typography>
@@ -1935,7 +2108,7 @@ const VideoGeneratorPage = ({ embedded = false }) => {
                     title={
                       faceRestoreAvailable
                         ? "Restores faces and reduces anatomy defects via CodeFormer"
-                        : "Requires facerestore_cf ComfyUI node + CodeFormer weights (Manage Video Models)"
+                        : "Requires ComfyUI running, the facerestore_cf node, and CodeFormer weights"
                     }
                   >
                     <span>
@@ -1956,6 +2129,8 @@ const VideoGeneratorPage = ({ embedded = false }) => {
                                 ? "Restores faces and reduces anatomy defects"
                                 : faceRestoreNodeAvailable === null || faceRestoreModelReady === null
                                   ? "Checking requirements…"
+                                  : comfyuiRunning === false
+                                    ? "ComfyUI is not running"
                                   : !faceRestoreNodeAvailable
                                     ? "ComfyUI node missing — restart ComfyUI from Plugins"
                                     : "CodeFormer weights not installed"}
@@ -1985,13 +2160,18 @@ const VideoGeneratorPage = ({ embedded = false }) => {
                     <Switch
                       checked={postUpscale || qualityTier === 'cinema'}
                       onChange={(e) => setPostUpscale(e.target.checked)}
+                      disabled={qualityTier === "cinema_plus"}
                       size="small"
                     />
                   }
                   label={
                     <Box>
                       <Typography variant="body2">2× upscale (Real-ESRGAN)</Typography>
-                      <Typography variant="caption" color="text.secondary">Sharper detail after generation</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {qualityTier === "cinema_plus"
+                          ? "Cinema+ uses RTX VSR instead"
+                          : "Sharper detail after generation"}
+                      </Typography>
                     </Box>
                   }
                 />
@@ -2074,13 +2254,14 @@ const VideoGeneratorPage = ({ embedded = false }) => {
                   type="number"
                   inputProps={{ step: 0.5, min: 1, max: 20 }}
                   value={advancedParams.guidance_scale}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    setGuidanceScaleOverridden(true);
                     setAdvancedParams({
                       ...advancedParams,
                       guidance_scale: Number(e.target.value),
-                    })
-                  }
-                  helperText={`Default for ${isWanModel(model) ? 'Wan' : 'CogVideoX'}: ${MODEL_DEFAULT_GUIDANCE[MODEL_OPTIONS[model]?.type] ?? 6}. Higher = stricter prompt adherence.`}
+                    });
+                  }}
+                  helperText={`${guidanceScaleOverridden ? "Explicit override" : "Model default"} for ${isWanModel(model) ? 'Wan' : 'CogVideoX'}: ${MODEL_DEFAULT_GUIDANCE[MODEL_OPTIONS[model]?.type] ?? 6}. Higher = stricter prompt adherence.`}
                   sx={{
                     width: { xs: '100%', sm: '280px' },
                     '& .MuiFormHelperText-root': {
@@ -2365,7 +2546,7 @@ const VideoGeneratorPage = ({ embedded = false }) => {
                         )}
                         {q.error && (
                           <Typography variant="caption" color="error" sx={{ mt: 0.5, display: 'block' }}>
-                            {q.error}
+                            {formatUiError(q.error)}
                           </Typography>
                         )}
                       </Box>
@@ -2561,7 +2742,7 @@ const VideoGeneratorPage = ({ embedded = false }) => {
                           </Stack>
                           {res.error && (
                             <Typography variant="caption" color="error" display="block" sx={{ mt: 0.5 }}>
-                              {res.error}
+                              {formatUiError(res.error)}
                             </Typography>
                           )}
                         </CardContent>
@@ -3020,7 +3201,7 @@ const VideoGeneratorPage = ({ embedded = false }) => {
           }}
           highlightModelId={highlightModelId}
           showMessage={(msg, severity) => {
-            if (severity === "error") setError(msg);
+            if (severity === "error") setError(formatUiError(msg));
             else setSuccess(msg);
           }}
         />

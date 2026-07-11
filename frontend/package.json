@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "node scripts/build-wsl.mjs",
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
     "test": "vitest run",
@@ -36,7 +36,7 @@
     "react-syntax-highlighter": "^16.1.1",
     "react-virtuoso": "^4.18.1",
     "reactflow": "^11.11.4",
-    "socket.io-client": "^4.8.1",
+    "socket.io-client": "^4.8.3",
     "zod": "^4.1.11",
     "zustand": "^4.4.0"
   },

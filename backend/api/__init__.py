@@ -26,6 +26,7 @@ def register_blueprints(app):
     from .wordpress_api import wordpress_bp
     from .interconnector_api import interconnector_bp
     from .batch_video_generation_api import batch_video_bp
+    from .ltx_sequence_api import ltx_sequence_bp
 
     blueprints = [
         jobs_bp,
@@ -54,6 +55,7 @@ def register_blueprints(app):
         wordpress_bp,
         interconnector_bp,
         batch_video_bp,
+        ltx_sequence_bp,
     ]
     for bp in blueprints:
         if bp.name not in app.blueprints:

@@ -268,6 +268,13 @@ export const UnifiedProgressProvider = ({ children }) => {
 
     const initializeSocket = () => {
       try {
+        console.info("[SOCKET-DIAGNOSTIC] initializing", {
+          socketUrl: SOCKET_URL,
+          apiBase: API_BASE,
+          origin: window.location.origin,
+          path: "/socket.io",
+          transports: ["polling", "websocket"],
+        });
         const socket = io(SOCKET_URL, {
           path: "/socket.io",
           transports: ["polling", "websocket"],
@@ -281,6 +288,17 @@ export const UnifiedProgressProvider = ({ children }) => {
         });
 
         socketRef.current = socket;
+
+        socket.io.engine?.on("upgrade", (transport) => {
+          console.info("[SOCKET-DIAGNOSTIC] transport upgraded", transport?.name || "unknown");
+        });
+        socket.io.engine?.on("upgradeError", (error) => {
+          console.warn("[SOCKET-DIAGNOSTIC] websocket upgrade failed; polling remains active", {
+            message: error?.message || String(error),
+            description: error?.description,
+            context: error?.context,
+          });
+        });
 
         socket.on("connect", async () => {
           console.debug(`[SOCKET-CHAT] UnifiedProgressContext CONNECTED id=${socket.id} transport=${socket.io?.engine?.transport?.name || 'unknown'}`);
@@ -347,7 +365,12 @@ export const UnifiedProgressProvider = ({ children }) => {
           }
         });
 
-        socket.on("disconnect", () => {
+        socket.on("disconnect", (reason, details) => {
+          console.info("[SOCKET-DIAGNOSTIC] disconnected", {
+            reason,
+            details,
+            transport: socket.io?.engine?.transport?.name || "unknown",
+          });
           // console.log("UnifiedProgressContext: Disconnected from SocketIO");
           setConnectionState('disconnected');
 
@@ -387,7 +410,13 @@ export const UnifiedProgressProvider = ({ children }) => {
           const transport = socket.io?.engine?.transport?.name;
           // Only one visible warning; the raw transport failure is noisy during startup/reconnect
           // (browser also emits "can't establish connection" for each WS attempt).
-          console.warn("[SOCKET-CHAT] UnifiedProgressContext connect_error:", msg, transport ? `(transport: ${transport})` : "", " -- may delay chat:join delivery (retrying)");
+          console.warn("[SOCKET-DIAGNOSTIC] connect_error", {
+            message: msg,
+            transport: transport || "unknown",
+            description: error?.description,
+            context: error?.context,
+            data: error?.data,
+          });
           debugLog("UnifiedProgressContext: Socket connect_error (full):", msg, transport);
           // Keep trying (reconnection: true + Infinity attempts); surface as error for UI.
           // The caller (e.g. ChatPage in agent mode) will call forceReconnect() as needed.

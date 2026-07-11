@@ -610,17 +610,17 @@ def _initialize_app_components(app):
             REDIS_LOSS_STALE = 300    # 5 min aggressive when Redis relay is down (loss detection)
             VIDEO_RENDER_STALE_HIGH = 900   # 15 min at >=95% (encoding hang)
             VIDEO_RENDER_STALE_MID = 1800   # 30 min mid-render (denoising)
+            VIDEO_RENDER_COMFY_DOWN_GRACE = 120  # tolerate brief probe/restart failures
 
             def _comfyui_is_down() -> bool:
                 try:
-                    from backend.config import config as _cfg
+                    from backend.config import COMFYUI_URL
                     import requests as _requests
-                    url = getattr(_cfg, "COMFYUI_URL", None) or os.environ.get(
-                        "GUAARDVARK_COMFYUI_URL", "http://127.0.0.1:8188"
-                    )
+                    url = os.environ.get("GUAARDVARK_COMFYUI_URL", COMFYUI_URL)
                     resp = _requests.get(url, timeout=2)
                     return resp.status_code != 200
-                except Exception:
+                except Exception as exc:
+                    app.logger.debug("ComfyUI health probe failed: %s", exc)
                     return True
 
             def _job_age_seconds(metadata: dict, file_mtime: float) -> float:
@@ -645,8 +645,18 @@ def _initialize_app_components(app):
                 if not redis_healthy:
                     return float(REDIS_LOSS_STALE)
                 if metadata.get("process_type") == "video_render":
+                    # LTX Director can spend several minutes in one sampler
+                    # step when a 22B/FP8 model is CPU-offloaded.  A transient
+                    # health-probe timeout must not be treated as a dead job.
+                    # The worker has its own prompt/history grace period; this
+                    # reaper should only intervene after a genuinely long stall.
+                    if (metadata.get("additional_data") or {}).get("engine") == "ltx-director":
+                        if comfyui_down:
+                            return 1800.0
+                        progress = int(metadata.get("progress") or 0)
+                        return 1800.0 if progress < 95 else 2400.0
                     if comfyui_down and metadata.get("status") == "processing":
-                        return 0.0
+                        return float(VIDEO_RENDER_COMFY_DOWN_GRACE)
                     progress = int(metadata.get("progress") or 0)
                     if progress >= 95:
                         return float(VIDEO_RENDER_STALE_HIGH)
@@ -668,7 +678,11 @@ def _initialize_app_components(app):
                 if batch_id:
                     try:
                         from backend.services.batch_video_generator import get_batch_video_generator
-                        get_batch_video_generator().cancel_batch(str(batch_id))
+                        reason = str(
+                            metadata.get("message")
+                            or "Video generation cancelled because its worker became unavailable"
+                        )
+                        get_batch_video_generator().cancel_batch(str(batch_id), reason=reason)
                     except Exception:
                         pass
                 try:

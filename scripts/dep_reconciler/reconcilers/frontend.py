@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -30,13 +31,27 @@ class Frontend(Reconciler):
         with log_path.open("a", encoding="utf-8") as log:
             log.write(f"\n=== {self.id} install @ {os.getpid()} ===\n")
             log.flush()
-            # `npm ci` is lockfile-strict: errors on drift instead of silently
-            # rewriting package-lock.json. With lockfile-only hashing, this is
-            # the correct tool — `npm install` would mutate the lockfile and
-            # register as drift on the next reconciler boot.
-            return self._run_subprocess(
-                ["npm", "ci"], log, cwd=self.root / "frontend"
-            )
+            npm_args = ["npm", "ci"]
+            if os.environ.get("WSL_DISTRO_NAME"):
+                npm_args.append("--no-bin-links")
+            rc = self._run_subprocess(npm_args, log, cwd=self.root / "frontend")
+            if rc == 0:
+                return 0
+
+            log.write("npm ci failed; clearing node_modules and npm cache before one retry\n")
+            self._heal_install_state(log)
+            return self._run_subprocess(npm_args, log, cwd=self.root / "frontend")
+
+    def _heal_install_state(self, log) -> None:
+        node_modules = self.root / "frontend" / "node_modules"
+        npm_cache = Path.home() / ".npm" / "_cacache"
+        for path in (node_modules, npm_cache):
+            try:
+                if path.exists():
+                    shutil.rmtree(path)
+                    log.write(f"Removed {path}\n")
+            except OSError as exc:
+                log.write(f"WARN: could not remove {path}: {exc}\n")
 
     @staticmethod
     def _run_subprocess(args: list[str], log, cwd: Path | None = None) -> int:

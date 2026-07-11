@@ -64,6 +64,60 @@ if not metrics_logger.handlers:
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
 
+def _windows_shared_gpu_memory() -> dict:
+    """Read WDDM shared GPU memory when this backend runs under WSL.
+
+    nvidia-smi reports dedicated VRAM only. Windows exposes shared GPU memory
+    through the GPU Adapter Memory performance counter, so use PowerShell as a
+    best-effort host probe and leave the fields null on native Linux/macOS.
+    """
+    powershell = shutil.which("powershell.exe")
+    if not powershell:
+        for candidate in (
+            "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+            "/mnt/c/Windows/SysWOW64/WindowsPowerShell/v1.0/powershell.exe",
+        ):
+            if os.path.isfile(candidate):
+                powershell = candidate
+                break
+    if not powershell:
+        return {}
+
+    script = (
+        "$used = ((Get-Counter '\\\\GPU Adapter Memory(*)\\\\Shared Usage' "
+        "-ErrorAction SilentlyContinue).CounterSamples | "
+        "Measure-Object -Property CookedValue -Sum).Sum; "
+        "$total = ((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 2); "
+        "[PSCustomObject]@{ used = $used; total = $total } | ConvertTo-Json -Compress"
+    )
+    try:
+        proc = subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        raw = (proc.stdout or "").strip()
+        if not raw:
+            return {}
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            return {}
+        used_bytes = float(parsed.get("used", 0) or 0)
+        total_bytes = float(parsed.get("total", 0) or 0)
+        if used_bytes < 0:
+            return {}
+        return {
+            "gpu_shared_mem_used_mb": round(used_bytes / (1024 * 1024), 2),
+            "gpu_shared_mem_total_mb": round(total_bytes / (1024 * 1024), 2) if total_bytes > 0 else None,
+            "gpu_shared_mem_source": "Windows GPU Adapter Memory",
+        }
+    except Exception as exc:
+        logger.debug("Windows shared GPU memory probe unavailable: %s", exc)
+        return {}
+
+
 def _clear_pycache_folders(root_dir: str) -> int:
     folders_deleted = 0
     for root, dirs, files in os.walk(root_dir, topdown=False):
@@ -280,11 +334,23 @@ def get_system_metrics():
         "gpu_mem": None,
         "gpu_tools_available": None,
         "gpu_check_error": None,
+        "gpu_shared_mem_used_mb": None,
+        "gpu_shared_mem_total_mb": None,
+        "gpu_shared_mem": None,
+        "gpu_shared_mem_source": None,
     }
     try:
         if psutil:
             metrics["cpu_percent"] = psutil.cpu_percent(interval=None)
-            metrics["cpu_mem"] = psutil.virtual_memory().percent
+            mem = psutil.virtual_memory()
+            metrics["cpu_mem"] = mem.percent
+            metrics["cpu_mem_used_mb"] = mem.used / (1024 * 1024)
+            metrics["cpu_mem_total_mb"] = mem.total / (1024 * 1024)
+            
+            swap = psutil.swap_memory()
+            metrics["swap_mem_used_mb"] = swap.used / (1024 * 1024)
+            metrics["swap_mem_total_mb"] = swap.total / (1024 * 1024)
+            metrics["swap_mem"] = swap.percent
             try:
                 temps = psutil.sensors_temperatures()
                 if temps:
@@ -325,6 +391,8 @@ def get_system_metrics():
                     total = float(parts[3])
                     if total > 0:
                         metrics["gpu_mem"] = round((used / total) * 100, 2)
+                    metrics["gpu_mem_used_mb"] = used
+                    metrics["gpu_mem_total_mb"] = total
         except Exception as e_gpu:
             gpu_error = f"nvidia-smi error: {e_gpu}"
             logger.debug(f"GPU metrics unavailable via nvidia-smi: {e_gpu}")
@@ -339,6 +407,20 @@ def get_system_metrics():
 
     if gpu_error:
         metrics["gpu_check_error"] = gpu_error
+
+    shared = _windows_shared_gpu_memory()
+    if shared:
+        metrics.update(shared)
+        if not metrics.get("gpu_shared_mem_total_mb") and psutil:
+            # WDDM's default shared-memory budget is half of physical RAM.
+            # This is a host budget, not dedicated VRAM, so label it separately.
+            shared_total = psutil.virtual_memory().total / (1024 * 1024) / 2
+            metrics["gpu_shared_mem_total_mb"] = round(shared_total, 2)
+        shared_total = metrics.get("gpu_shared_mem_total_mb")
+        if shared_total and metrics.get("gpu_shared_mem_used_mb") is not None:
+            metrics["gpu_shared_mem"] = round(
+                metrics["gpu_shared_mem_used_mb"] / shared_total * 100, 2
+            )
 
     return jsonify(metrics), 200
 

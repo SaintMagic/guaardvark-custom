@@ -257,6 +257,52 @@ fi
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
+heal_frontend_install_state() {
+  local node_modules="$FRONTEND_DIR/node_modules"
+  local npm_cache="$HOME/.npm/_cacache"
+  vader_warn "Clearing broken frontend install state before retry..."
+  rm -rf "$node_modules" 2>/dev/null || true
+  rm -rf "$npm_cache" 2>/dev/null || true
+}
+
+frontend_npm_ci() {
+  if [ "${GUAARDVARK_IS_WSL:-0}" = "1" ]; then
+    "$NPM_CMD" ci --no-bin-links
+  else
+    "$NPM_CMD" ci
+  fi
+}
+
+frontend_npm_install() {
+  if [ "${GUAARDVARK_IS_WSL:-0}" = "1" ]; then
+    "$NPM_CMD" install --no-bin-links
+  else
+    "$NPM_CMD" install
+  fi
+}
+
+frontend_vite() {
+  if [ -f "$FRONTEND_DIR/node_modules/vite/bin/vite.js" ]; then
+    node "$FRONTEND_DIR/node_modules/vite/bin/vite.js" "$@"
+  else
+    "$NPM_CMD" exec vite "$@"
+  fi
+}
+
+frontend_build() {
+  if [ "${GUAARDVARK_IS_WSL:-0}" = "1" ]; then
+    # npm run build stages the source on the WSL filesystem before invoking
+    # Vite. Building directly from /mnt/c can spend several minutes on NTFS
+    # metadata calls and looks indistinguishable from a hung transform phase.
+    "$NPM_CMD" run build
+    mkdir -p "$HOME/.local/share/guaardvark/frontend-dist"
+    rm -rf "$HOME/.local/share/guaardvark/frontend-dist"
+    cp -a "$FRONTEND_DIR/dist/." "$HOME/.local/share/guaardvark/frontend-dist/"
+  else
+    frontend_vite build
+  fi
+}
+
 # Portable `timeout`: base macOS ships no `timeout` (it's GNU coreutils). Without this,
 # `timeout N ollama list` hits command-not-found, the `|| true` swallows it, and the
 # caller sees an EMPTY result — which made the boot model-presence check report
@@ -1051,9 +1097,12 @@ ensure_backend_python_environment() {
             "$VENV_DIR/bin/pip" uninstall -y flash-attn flash_attn xformers 2>/dev/null | tail -1 || true
         fi
 
-        # Full reconciler pass for state tracking, CRITICAL_PACKAGES verification, cli_venv, etc.
+        # Full reconciler pass for the backend runtime itself. Avoid forcing the
+        # editable CLI install during app boot: it pulls in optional CLI/package
+        # paths that are not required to launch GW and has historically produced
+        # noisy bootstrap failures unrelated to backend health.
         if [ -x "$VENV_DIR/bin/python" ]; then
-            "$VENV_DIR/bin/python" "$SCRIPT_DIR/scripts/dep_reconciler.py" --force --only backend_venv,cli_venv --repo-root "$SCRIPT_DIR" >> "$SETUP_LOG" 2>&1 || \
+            "$VENV_DIR/bin/python" "$SCRIPT_DIR/scripts/dep_reconciler.py" --force --only backend_venv --repo-root "$SCRIPT_DIR" >> "$SETUP_LOG" 2>&1 || \
                 vader_warn "dep_reconciler had issues (see setup.log); basic pip may still have succeeded"
         fi
 
@@ -1077,8 +1126,19 @@ ensure_frontend_deps() {
     local nm="$FRONTEND_DIR/node_modules"
     local lock="$FRONTEND_DIR/package-lock.json"
     local stamp="$FRONTEND_DIR/.npm_stamp"
+    local vite_bin="$FRONTEND_DIR/node_modules/vite/bin/vite.js"
+    local react_pkg="$FRONTEND_DIR/node_modules/react/package.json"
 
     if [ "$FAST_START" -eq 1 ] && [ -d "$nm" ]; then
+        return 0
+    fi
+
+    # WSL-on-NTFS is a hostile place for repeated npm ci runs: chmod/bin-link
+    # steps can fail on /mnt/c even when the existing install is perfectly
+    # usable. If core frontend entrypoints are already present, trust them and
+    # skip the reinstall loop that otherwise wedges startup.
+    if [ "${GUAARDVARK_IS_WSL:-0}" = "1" ] && [ -f "$vite_bin" ] && [ -f "$react_pkg" ]; then
+        touch "$stamp" 2>/dev/null || true
         return 0
     fi
 
@@ -1086,16 +1146,23 @@ ensure_frontend_deps() {
     # only when truly needed: missing node_modules, or lockfile newer than our stamp.
     if [ ! -d "$nm" ] || [ ! -f "$stamp" ] || [ "$lock" -nt "$stamp" 2>/dev/null ]; then
         vader_info "Ensuring frontend dependencies (using npm ci for lockfile safety)..."
-        if (cd "$FRONTEND_DIR" && npm ci >> "$SETUP_LOG" 2>&1); then
+        if (cd "$FRONTEND_DIR" && frontend_npm_ci >> "$SETUP_LOG" 2>&1); then
             touch "$stamp" 2>/dev/null || true
             vader_success "Frontend node_modules ready"
         else
-            vader_warn "npm ci failed — trying npm install (may touch package-lock.json)"
-            if (cd "$FRONTEND_DIR" && npm install >> "$SETUP_LOG" 2>&1); then
+            heal_frontend_install_state
+            vader_warn "npm ci failed — retrying once after clearing npm cache/node_modules"
+            if (cd "$FRONTEND_DIR" && frontend_npm_ci >> "$SETUP_LOG" 2>&1); then
                 touch "$stamp" 2>/dev/null || true
+                vader_success "Frontend node_modules recovered"
             else
-                vader_error "Frontend dependency installation failed. See $SETUP_LOG"
-                return 1
+                vader_warn "Retry failed — trying npm install (may touch package-lock.json)"
+                if (cd "$FRONTEND_DIR" && frontend_npm_install >> "$SETUP_LOG" 2>&1); then
+                    touch "$stamp" 2>/dev/null || true
+                else
+                    vader_error "Frontend dependency installation failed. See $SETUP_LOG"
+                    return 1
+                fi
             fi
         fi
     fi
@@ -1663,9 +1730,10 @@ vader_separator
 
 # ── ComfyUI detection (on-demand start for video generation) ──
 COMFYUI_DIR="${GUAARDVARK_COMFYUI_DIR:-$GUAARDVARK_ROOT/plugins/comfyui/ComfyUI}"
+COMFYUI_URL="${GUAARDVARK_COMFYUI_URL:-http://127.0.0.1:8188}"
 if [ -d "$COMFYUI_DIR" ]; then
-    if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8188" 2>/dev/null | grep -q "200"; then
-        vader_success "ComfyUI detected and running (port 8188)"
+    if curl -s -o /dev/null -w "%{http_code}" "$COMFYUI_URL" 2>/dev/null | grep -q "200"; then
+        vader_success "ComfyUI detected and running ($COMFYUI_URL)"
     else
         vader_info "ComfyUI detected at $COMFYUI_DIR (on-demand start for video generation)"
     fi
@@ -1855,14 +1923,15 @@ fi
 source "$VENV_DIR/bin/activate" || { vader_error "Failed to activate venv for Flask."; cd "$SCRIPT_DIR"; exit 1; }
 
 # Strong post-bootstrap validation (the heart of the fix).
-# If the ensure_ steps above did their job, this will pass quickly.
-# If something is still wrong we fail here with a clear message instead of
-# a confusing ModuleNotFoundError 30 lines later in the app.
+# Keep this import-only and side-effect-light: importing backend.app starts
+# long-lived background helpers during module init, which turns this command
+# substitution into a silent hang. Validate the backend package surface
+# without importing the forever-running app entrypoint itself.
 _POST_BOOTSTRAP_ERR=$("$VENV_DIR/bin/python" -c "
 import sys
 sys.path.insert(0, '$SCRIPT_DIR')
 import numpy, flask, celery
-import backend.config, backend.models, backend.app
+import backend.config, backend.models, backend.socketio_events
 print('Post-bootstrap core imports: OK')
 " 2>&1)
 _POST_BOOTSTRAP_RC=$?
@@ -1949,6 +2018,22 @@ fi
 export REDIS_URL="${REDIS_URL:-redis://localhost:6379/0}"
 export CELERY_BROKER_URL="${CELERY_BROKER_URL:-redis://localhost:6379/0}"
 export CELERY_RESULT_BACKEND="${CELERY_RESULT_BACKEND:-redis://localhost:6379/0}"
+
+# WSL/Ubuntu package redis-server often runs without a password by default. If
+# .env still contains an auth-bearing URL from a previous install, normalize the
+# runtime env to no-auth rather than failing every backend boot.
+if command_exists redis-cli; then
+    if redis-cli ping >/dev/null 2>&1; then
+        case "$REDIS_URL$CELERY_BROKER_URL$CELERY_RESULT_BACKEND" in
+            *://:*)
+                vader_warn "Redis is accepting no-auth connections; overriding auth-bearing Redis URLs for this session."
+                export REDIS_URL="redis://localhost:6379/0"
+                export CELERY_BROKER_URL="redis://localhost:6379/0"
+                export CELERY_RESULT_BACKEND="redis://localhost:6379/0"
+                ;;
+        esac
+    fi
+fi
 
 vader_info "Initializing enhanced LLM components..."
 python3 - << 'EOF' 2>/dev/null
@@ -2169,7 +2254,7 @@ else
 fi
 
 vader_info "Building frontend (production) before serving..."
-if (cd "$FRONTEND_DIR" && $NPM_CMD run build >> "$FRONTEND_LOG_FILE" 2>&1); then
+if (cd "$FRONTEND_DIR" && frontend_build >> "$FRONTEND_LOG_FILE" 2>&1); then
     vader_success "Frontend build complete"
 elif [ -f "$FRONTEND_DIR/dist/index.html" ]; then
     vader_error "Frontend build FAILED — serving the LAST-GOOD (stale) dist. Code is NOT current. Fix the build; see $FRONTEND_LOG_FILE"
@@ -2187,7 +2272,7 @@ if [ "$FRONTEND_CAN_SERVE" -eq 1 ]; then
     # vite.config had only the dev `server:` block). The build above is kept as a
     # belt-and-suspenders correctness check, but the dev server serves src/ directly.
     vader_info "Launching frontend (Vite dev server, reliable WS proxy) in background..."
-    nohup $NPM_CMD run dev -- --host --port=$VITE_PORT >> "$FRONTEND_LOG_FILE" 2>&1 &
+    nohup sh -c "cd '$FRONTEND_DIR' && node '$FRONTEND_DIR/node_modules/vite/bin/vite.js' --host --port='$VITE_PORT'" >> "$FRONTEND_LOG_FILE" 2>&1 &
     FRONTEND_PID=$!
     echo "$FRONTEND_PID" > "$SCRIPT_DIR/pids/frontend.pid"
     sleep 3

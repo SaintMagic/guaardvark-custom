@@ -35,7 +35,7 @@ const SystemMetricsBar = () => {
       }
     };
     fetchMetrics();
-    const id = setInterval(fetchMetrics, Math.max(METRICS_POLL_INTERVAL_MS, 10000));
+    const id = setInterval(fetchMetrics, Math.max(METRICS_POLL_INTERVAL_MS, 2000));
     return () => {
       isMounted = false;
       clearInterval(id);

@@ -13,9 +13,18 @@ REPO_ROOT="$(cd "$PLUGIN_DIR/../.." && pwd)"
 # string, refuse rather than risk `rm -rf "/venv"`.
 [ -n "$PLUGIN_DIR" ] && [ -d "$PLUGIN_DIR" ] || { echo "FATAL: PLUGIN_DIR unresolved" >&2; exit 1; }
 [ -n "$REPO_ROOT" ] && [ -d "$REPO_ROOT" ] || { echo "FATAL: REPO_ROOT unresolved" >&2; exit 1; }
-PY="${PYTHON_CMD:-python3.12}"
+PY="${PYTHON_CMD:-$REPO_ROOT/backend/venv/bin/python}"
 INSTALL_PYTORCH="$REPO_ROOT/scripts/install_pytorch.sh"
 BACKEND_PY="$REPO_ROOT/backend/venv/bin/python"
+if [ ! -x "$PY" ]; then
+    if command -v /usr/bin/python3.12 >/dev/null 2>&1; then
+        PY="/usr/bin/python3.12"
+    elif command -v python3.12 >/dev/null 2>&1; then
+        PY="$(command -v python3.12)"
+    else
+        PY="$(command -v python3)"
+    fi
+fi
 
 # Resolve the torch channel from the single source of truth (backend venv).
 # Empty string (backend venv/policy not importable yet) → install_pytorch.sh

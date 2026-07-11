@@ -10,8 +10,14 @@ import threading
 import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+
+def _comfyui_port() -> str:
+    parsed = urlparse(COMFYUI_URL)
+    return str(parsed.port or 8188)
 
 try:
     from backend.config import (
@@ -239,7 +245,7 @@ class VideoGenerationRouter:
         try:
             log_file = open(str(log_path), "a")
             proc = subprocess.Popen(
-                [str(venv_python), str(main_py), "--listen", "--port", "8188"],
+                [str(venv_python), str(main_py), "--listen", "--port", _comfyui_port()],
                 cwd=str(comfyui_dir),
                 stdout=log_file,
                 stderr=subprocess.STDOUT,

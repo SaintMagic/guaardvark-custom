@@ -95,6 +95,9 @@ class VideoGenerationRequest:
     motion_strength: float = 1.0
     num_inference_steps: int = 25
     guidance_scale: float = 7.5
+    # False means the model profile may supply its recommended CFG. True means
+    # the caller explicitly selected CFG and it must reach every sampler.
+    guidance_scale_overridden: bool = False
     seed: Optional[int] = None
     generate_frames_only: bool = False
     frames_per_batch: int = 1
@@ -109,6 +112,7 @@ class VideoGenerationRequest:
     face_restore: bool = False
     lora_name: Optional[str] = None
     lora_strength: float = 1.0
+    cancel_event: Optional[object] = None
 
 
 @dataclass
@@ -121,6 +125,8 @@ class VideoGenerationResult:
     error: Optional[str] = None
     metadata: Dict[str, str] = field(default_factory=dict)
 
+
+_global_object_info_cache: Optional[dict] = None
 
 class ComfyUIVideoGenerator:
 
@@ -145,8 +151,12 @@ class ComfyUIVideoGenerator:
 
         self.comfy_output_dir = Path(COMFYUI_OUTPUT_DIR if config_available else os.environ.get('COMFYUI_OUTPUT_DIR', os.path.join(os.environ.get('GUAARDVARK_ROOT', '.'), 'data', 'outputs', 'video')))
 
+        # The shared model registry uses portable '/' paths. ComfyUI's model
+        # enum reflects the host platform, so native Windows needs '\\' for
+        # nested UNET names while Linux needs '/'.
+        self._comfy_model_separator: Optional[str] = None
+
         self.service_available = self._check_comfyui_connection()
-        self._object_info_cache: Optional[dict] = None
 
         if self.service_available:
             logger.info(f"ComfyUI video generator connected to {self.comfy_url}")
@@ -154,17 +164,18 @@ class ComfyUIVideoGenerator:
             logger.warning(f"ComfyUI not available at {self.comfy_url}. Video generation will fail unless ComfyUI is started.")
 
     def _get_object_info(self) -> dict:
-        """Fetch ComfyUI /object_info once and cache (node class availability probe)."""
-        if self._object_info_cache is not None:
-            return self._object_info_cache
+        """Fetch ComfyUI /object_info once and cache globally (node class availability probe)."""
+        global _global_object_info_cache
+        if _global_object_info_cache is not None:
+            return _global_object_info_cache
         try:
             response = requests.get(f"{self.comfy_url}/object_info", timeout=5)
             response.raise_for_status()
-            self._object_info_cache = response.json()
+            _global_object_info_cache = response.json()
         except Exception as e:
             logger.debug(f"Could not fetch ComfyUI object_info: {e}")
-            self._object_info_cache = {}
-        return self._object_info_cache
+            return {}
+        return _global_object_info_cache
 
     def comfy_node_available(self, class_type: str) -> bool:
         if not self.service_available and not self._check_comfyui_connection():
@@ -173,8 +184,17 @@ class ComfyUIVideoGenerator:
 
     def _check_comfyui_connection(self) -> bool:
         try:
-            response = requests.get(self.comfy_url, timeout=2)
-            return response.status_code == 200
+            response = requests.get(self.comfy_url, timeout=15)
+            if response.status_code != 200:
+                return False
+            if self._comfy_model_separator is None:
+                try:
+                    stats = requests.get(f"{self.comfy_url}/system_stats", timeout=5)
+                    system = stats.json().get("system", {})
+                    self._comfy_model_separator = "\\" if system.get("os") == "win32" else "/"
+                except Exception:
+                    self._comfy_model_separator = "/"
+            return True
         except requests.exceptions.RequestException:
             return False
 
@@ -413,22 +433,13 @@ class ComfyUIVideoGenerator:
             return None
 
         total_mb = info.get("total_mb") or 0
-        if total_mb <= 0:
-            return None  # unknown total → fail open
-        total_gb = total_mb / 1024.0
         need = self._min_vram_gb_for(model)
-        # Tolerance for real "16 GB" consumer cards (common 15.5-16.0 GB reported
-        # total after driver/display reservation). The quantized GGUF paths and
-        # music-video's 832x480 preview res target exactly this hardware class.
-        # We still hard-block true under-spec cards (e.g. 12 GB or less) and any
-        # probe failure is fail-open (existing behavior).
-        # Use MB math for the tolerance check to avoid float edge cases.
-        need_mb = need * 1024
-        if need and total_mb + 512 < need_mb:  # ~0.5 GB grace
-            return (
-                f"{model} needs ~{need}g GB VRAM; detected {total_gb:.2f}g GB "
-                f"({total_mb} MB total). "
-                "Try a lighter model or preview resolution."
+        if total_mb > 0 and need:
+            total_gb = total_mb / 1024.0
+            logger.warning(
+                "VRAM preflight advisory for %s: model floor ~%sGB, detected %.2fGB "
+                "(%s MB total); proceeding and letting Comfy/PyTorch report any real OOM",
+                model, need, total_gb, total_mb,
             )
         return None
 
@@ -771,6 +782,7 @@ class ComfyUIVideoGenerator:
         seed: Optional[int] = None,
         fps: int = 16,
         interpolation_multiplier: int = 2,
+        guidance_scale_overridden: bool = False,
     ) -> dict:
         """Build a ComfyUI API-format workflow for Wan 2.2 MoE text-to-video.
 
@@ -781,7 +793,15 @@ class ComfyUIVideoGenerator:
         if seed is None:
             seed = int(time.time() * 1000) % (2**31)
 
-        model_files = self.WAN22_MODELS.get(model_key, self.WAN22_MODELS["wan22-14b"])
+        model_files = self.WAN22_MODELS.get(model_key) or self.WAN22_MODELS.get("wan22-14b")
+        if not model_files:
+            raise ValueError(f"Wan model profile is unavailable: {model_key}")
+        profile = model_files.get("workflow_defaults") or {}
+        if profile and not guidance_scale_overridden:
+            num_inference_steps = int(profile.get("num_inference_steps", num_inference_steps))
+            guidance_scale = float(profile.get("guidance_scale", guidance_scale))
+        sampler_name = profile.get("sampler_name", "euler")
+        scheduler = profile.get("scheduler", "simple")
 
         # Default negative prompt for anatomy quality
         if not negative_prompt:
@@ -796,20 +816,10 @@ class ComfyUIVideoGenerator:
 
         workflow = {
             # ── Model Loading ──────────────────────────────────────────────
-            # Node 1: Load HighNoise GGUF expert
-            "1": {
-                "class_type": "UnetLoaderGGUF",
-                "inputs": {
-                    "unet_name": model_files["unet_high"],
-                }
-            },
-            # Node 2: Load LowNoise GGUF expert
-            "2": {
-                "class_type": "UnetLoaderGGUF",
-                "inputs": {
-                    "unet_name": model_files["unet_low"],
-                }
-            },
+            # Node 1: Load HighNoise expert (GGUF or FP8 safetensors)
+            "1": self._wan_unet_loader_node(model_files["unet_high"]),
+            # Node 2: Load LowNoise expert (GGUF or FP8 safetensors)
+            "2": self._wan_unet_loader_node(model_files["unet_low"]),
             # Node 3: Load UMT5 text encoder (Wan clip type)
             "3": {
                 "class_type": "CLIPLoader",
@@ -892,8 +902,8 @@ class ComfyUIVideoGenerator:
                     "control_after_generate": "randomize",
                     "steps": num_inference_steps,
                     "cfg": guidance_scale,
-                    "sampler_name": "euler",
-                    "scheduler": "simple",
+                    "sampler_name": sampler_name,
+                    "scheduler": scheduler,
                     "start_at_step": 0,
                     "end_at_step": midpoint,
                     "return_with_leftover_noise": "enable",
@@ -912,8 +922,8 @@ class ComfyUIVideoGenerator:
                     "control_after_generate": "fixed",
                     "steps": num_inference_steps,
                     "cfg": guidance_scale,
-                    "sampler_name": "euler",
-                    "scheduler": "simple",
+                    "sampler_name": sampler_name,
+                    "scheduler": scheduler,
                     "start_at_step": midpoint,
                     "end_at_step": 10000,
                     "return_with_leftover_noise": "disable",
@@ -972,6 +982,7 @@ class ComfyUIVideoGenerator:
         seed: Optional[int] = None,
         fps: int = 16,
         interpolation_multiplier: int = 2,
+        guidance_scale_overridden: bool = False,
     ) -> dict:
         # Same MoE two-pass dance as Wan T2V, but the empty latent gets swapped
         # for WanImageToVideo — that node bakes the start frame into the
@@ -979,7 +990,15 @@ class ComfyUIVideoGenerator:
         if seed is None:
             seed = int(time.time() * 1000) % (2**31)
 
-        model_files = self.WAN22_MODELS.get(model_key, self.WAN22_MODELS["wan22-14b-i2v"])
+        model_files = self.WAN22_MODELS.get(model_key) or self.WAN22_MODELS.get("wan22-14b-i2v")
+        if not model_files:
+            raise ValueError(f"Wan I2V model profile is unavailable: {model_key}")
+        profile = model_files.get("workflow_defaults") or {}
+        if profile and not guidance_scale_overridden:
+            num_inference_steps = int(profile.get("num_inference_steps", num_inference_steps))
+            guidance_scale = float(profile.get("guidance_scale", guidance_scale))
+        sampler_name = profile.get("sampler_name", "euler")
+        scheduler = profile.get("scheduler", "simple")
 
         if not negative_prompt:
             negative_prompt = (
@@ -992,8 +1011,8 @@ class ComfyUIVideoGenerator:
         midpoint = num_inference_steps // 2
 
         workflow = {
-            "1": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": model_files["unet_high"]}},
-            "2": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": model_files["unet_low"]}},
+            "1": self._wan_unet_loader_node(model_files["unet_high"]),
+            "2": self._wan_unet_loader_node(model_files["unet_low"]),
             "3": {"class_type": "CLIPLoader", "inputs": {"clip_name": model_files["clip"], "type": "wan", "device": "default"}},
             "4": {"class_type": "VAELoader", "inputs": {"vae_name": model_files["vae"]}},
             "5": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["3", 0], "text": prompt}},
@@ -1028,8 +1047,8 @@ class ComfyUIVideoGenerator:
                     "control_after_generate": "randomize",
                     "steps": num_inference_steps,
                     "cfg": guidance_scale,
-                    "sampler_name": "euler",
-                    "scheduler": "simple",
+                    "sampler_name": sampler_name,
+                    "scheduler": scheduler,
                     "start_at_step": 0,
                     "end_at_step": midpoint,
                     "return_with_leftover_noise": "enable",
@@ -1047,8 +1066,8 @@ class ComfyUIVideoGenerator:
                     "control_after_generate": "fixed",
                     "steps": num_inference_steps,
                     "cfg": guidance_scale,
-                    "sampler_name": "euler",
-                    "scheduler": "simple",
+                    "sampler_name": sampler_name,
+                    "scheduler": scheduler,
                     "start_at_step": midpoint,
                     "end_at_step": 10000,
                     "return_with_leftover_noise": "disable",
@@ -1098,6 +1117,7 @@ class ComfyUIVideoGenerator:
         seed: Optional[int] = None,
         fps: int = 24,
         interpolation_multiplier: int = 1,
+        guidance_scale_overridden: bool = False,
     ) -> dict:
         """Wan 2.2 TI2V-5B — single-model text+image-to-video that FITS 16GB (no MoE
         two-pass, no CPU offload → none of the 38-min-per-clip A14B pain). Graph mirrors
@@ -1237,11 +1257,24 @@ class ComfyUIVideoGenerator:
         Returns:
             The modified workflow dict.
         """
-        # Pick the next available node ID
+        rife_node_id = self._add_rife_node(workflow, source_node_id, multiplier)
+
+        # Rewire VHS_VideoCombine to take frames from RIFE instead of source
+        workflow[video_combine_node_id]["inputs"]["images"] = [rife_node_id, 0]
+        workflow[video_combine_node_id]["inputs"]["frame_rate"] = base_fps * multiplier
+
+        logger.info(
+            f"Added RIFE interpolation (x{multiplier}): "
+            f"node {source_node_id} -> RIFE({rife_node_id}) -> VHS_VideoCombine({video_combine_node_id}), "
+            f"FPS {base_fps} -> {base_fps * multiplier}"
+        )
+
+        return workflow
+
+    def _add_rife_node(self, workflow: dict, source_node_id: str, multiplier: int = 2) -> str:
+        """Add RIFE and return its node id without changing the output node."""
         existing_ids = [int(k) for k in workflow.keys() if k.isdigit()]
         rife_node_id = str(max(existing_ids) + 1)
-
-        # Insert RIFE VFI node
         workflow[rife_node_id] = {
             "class_type": "RIFE VFI",
             "inputs": {
@@ -1257,18 +1290,28 @@ class ComfyUIVideoGenerator:
                 "batch_size": 1,
             }
         }
+        return rife_node_id
 
-        # Rewire VHS_VideoCombine to take frames from RIFE instead of source
-        workflow[video_combine_node_id]["inputs"]["images"] = [rife_node_id, 0]
-        workflow[video_combine_node_id]["inputs"]["frame_rate"] = base_fps * multiplier
-
-        logger.info(
-            f"Added RIFE interpolation (x{multiplier}): "
-            f"node {source_node_id} -> RIFE({rife_node_id}) -> VHS_VideoCombine({video_combine_node_id}), "
-            f"FPS {base_fps} -> {base_fps * multiplier}"
-        )
-
-        return workflow
+    def _wan_unet_loader_node(self, model_name: Optional[str]) -> dict:
+        """Return the correct Wan expert loader node for the file format."""
+        if not model_name:
+            raise ValueError("Wan expert model name is required")
+        separator = self._comfy_model_separator or "/"
+        model_name = model_name.replace("\\", separator).replace("/", separator)
+        if model_name.lower().endswith(".gguf"):
+            return {
+                "class_type": "UnetLoaderGGUF",
+                "inputs": {
+                    "unet_name": model_name,
+                },
+            }
+        return {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": model_name,
+                "weight_dtype": "default",
+            },
+        }
 
     def _add_upscale_node(
         self,
@@ -1315,6 +1358,49 @@ class ComfyUIVideoGenerator:
             f"node {source_node_id} -> Upscale({upscale_id}) -> VHS_VideoCombine({video_combine_node_id})"
         )
 
+        return workflow
+
+    def _add_rtx_upscale_node(
+        self,
+        workflow: dict,
+        source_node_id: str,
+        video_combine_node_id: str,
+        scale: float = 2.0,
+    ) -> dict:
+        """Insert the DaSiWa RTX VSR node after the final frame source.
+
+        Cinema+ deliberately uses scale mode and letterbox semantics. The
+        generated video keeps its source aspect ratio and is not silently
+        center-cropped by a post-processing preset.
+        """
+        existing_ids = [int(k) for k in workflow.keys() if k.isdigit()]
+        rtx_node_id = str(max(existing_ids) + 1)
+        workflow[rtx_node_id] = {
+            "class_type": "DaSiWa_RTX_UpscalerRefiner",
+            "inputs": {
+                "images": [source_node_id, 0],
+                "denoise": False,
+                "denoise_quality": "Ultra",
+                "deblur": False,
+                "deblur_quality": "Ultra",
+                "upscale": "VSR",
+                "upscale_quality": "Ultra",
+                "resize_type": "Scale",
+                "scale": float(scale),
+                "megapixels": 2.0,
+                "width": 1920,
+                "height": 1080,
+                "divisible_by": "8",
+                "ratio_preset": "16:9",
+                "resize_method": "Letterbox (Fit)",
+                "device_id": 0,
+            },
+        }
+        workflow[video_combine_node_id]["inputs"]["images"] = [rtx_node_id, 0]
+        logger.info(
+            "Added Cinema+ RTX VSR node %s after frame source %s before VHS %s (scale=%s)",
+            rtx_node_id, source_node_id, video_combine_node_id, scale,
+        )
         return workflow
 
     def _add_freeu_node(self, workflow: dict, model_node_id: str, is_cogvideo: bool = False) -> str:
@@ -1503,20 +1589,24 @@ class ComfyUIVideoGenerator:
             return "ComfyUI reported execution error"
         return None
 
-    def _wait_for_completion(self, prompt_id: str, timeout: int = 600) -> Optional[dict]:
+    def _wait_for_completion(self, prompt_id: str, timeout: int = 600, cancel_event: Optional[object] = None) -> Optional[dict]:
         start_time = time.time()
         last_log_time = start_time
         poll_count = 0
-        orphan_grace_s = 30  # allow queue/history to populate after POST /prompt
+        orphan_grace_s = 120  # tolerate busy/temporarily unavailable queue/history probes
+        missing_prompt_since = None
+        deadline = start_time + timeout
 
-        while time.time() - start_time < timeout:
+        while True:
             poll_count += 1
+            now = time.time()
 
-            if not self._comfyui_alive():
-                logger.error(
-                    "ComfyUI unreachable while waiting for %s — prompt orphaned",
-                    prompt_id,
-                )
+            if cancel_event and getattr(cancel_event, "is_set", lambda: False)():
+                logger.info(f"Generation cancelled for {prompt_id} via event")
+                return {"_cancelled_by_event": True}
+
+            if now >= deadline:
+                logger.error(f"Generation timed out after {timeout}s")
                 return None
 
             try:
@@ -1526,8 +1616,10 @@ class ComfyUIVideoGenerator:
                 )
                 response.raise_for_status()
                 history = response.json()
+                prompt_seen = prompt_id in history
+                in_queue = None
 
-                if prompt_id in history:
+                if prompt_seen:
                     entry = history[prompt_id]
                     exec_err = self._history_execution_error(entry)
                     if exec_err:
@@ -1537,34 +1629,43 @@ class ComfyUIVideoGenerator:
                     if outputs:
                         logger.info(f"Generation complete: {prompt_id}")
                         return outputs
-
-                elapsed = time.time() - start_time
-                if elapsed > orphan_grace_s:
+                else:
                     in_queue = self._prompt_in_queue(prompt_id)
-                    if in_queue is False and prompt_id not in history:
+
+                elapsed = now - start_time
+                if prompt_seen or in_queue is True:
+                    # Keep extending the deadline while the prompt is still live
+                    # so long renders do not fail just because they exceed the
+                    # original wall-clock estimate.
+                    deadline = max(deadline, now + timeout)
+
+                if in_queue is False and not prompt_seen:
+                    if missing_prompt_since is None:
+                        missing_prompt_since = now
+                    missing_for = now - missing_prompt_since
+                    if elapsed > orphan_grace_s and missing_for >= orphan_grace_s:
                         logger.error(
                             "ComfyUI lost prompt %s (not in queue or history) — "
                             "likely restarted mid-render",
                             prompt_id,
                         )
                         return None
+                else:
+                    missing_prompt_since = None
 
-                current_time = time.time()
-                if current_time - last_log_time > 10:
+                if now - last_log_time > 10:
                     logger.info(
-                        "Waiting for generation... (%ds elapsed, prompt_id=%s)",
+                        "Waiting for generation... (%ds elapsed, prompt_id=%s, deadline in %ds)",
                         int(elapsed),
                         prompt_id,
+                        int(max(0, deadline - now)),
                     )
-                    last_log_time = current_time
+                    last_log_time = now
 
             except Exception as e:
                 logger.warning(f"Error checking generation status: {e}")
 
             time.sleep(2)
-
-        logger.error(f"Generation timed out after {timeout}s")
-        return None
 
     def _download_result(self, outputs: dict, destination_dir: Path) -> List[str]:
         downloaded_files = []
@@ -1692,7 +1793,10 @@ class ComfyUIVideoGenerator:
             )
 
         # Refresh node registry — ComfyUI loads custom nodes only at startup.
-        self._object_info_cache = None
+        # The cache is process-global so reset that actual cache, not a stale
+        # instance attribute, after a ComfyUI restart/custom-node install.
+        global _global_object_info_cache
+        _global_object_info_cache = None
         if not self.comfy_node_available("VHS_VideoCombine"):
             return VideoGenerationResult(
                 success=False,
@@ -1796,7 +1900,11 @@ class ComfyUIVideoGenerator:
                 cfg = self.WAN22_MODELS[model_key]
 
                 # Wan 14B MoE uses ComfyUI-GGUF (UnetLoaderGGUF). TI2V-5B uses UNETLoader.
-                if not cfg.get("single") and not self.comfy_node_available("UnetLoaderGGUF"):
+                uses_gguf_loader = (
+                    str(cfg.get("unet_high") or "").lower().endswith(".gguf")
+                    or str(cfg.get("unet_low") or "").lower().endswith(".gguf")
+                )
+                if not cfg.get("single") and uses_gguf_loader and not self.comfy_node_available("UnetLoaderGGUF"):
                     return VideoGenerationResult(
                         success=False,
                         error=(
@@ -1832,6 +1940,7 @@ class ComfyUIVideoGenerator:
                         seed=seed,
                         fps=request.fps,
                         interpolation_multiplier=interpolation,
+                        guidance_scale_overridden=request.guidance_scale_overridden,
                     )
                     logger.info(f"Using Wan 2.2 TI2V-5B ({'i2v' if img_name else 't2v'}, {model_key}) via ComfyUI")
                 elif is_i2v:
@@ -1855,11 +1964,12 @@ class ComfyUIVideoGenerator:
                         seed=seed,
                         fps=request.fps,
                         interpolation_multiplier=interpolation,
+                        guidance_scale_overridden=request.guidance_scale_overridden,
                     )
                     logger.info(f"Using Wan 2.2 image-to-video ({model_key}) via ComfyUI GGUF")
                 else:
                     if image_path:
-                        result.error = f"{model_key} is text-to-video only. Use wan22-14b-i2v for image-to-video."
+                        result.error = f"{model_key} is text-to-video only. Use an I2V Wan 2.2 model for image-to-video."
                         return result
                     workflow = self._create_wan22_t2v_workflow(
                         prompt=request.prompt,
@@ -1873,6 +1983,7 @@ class ComfyUIVideoGenerator:
                         seed=seed,
                         fps=request.fps,
                         interpolation_multiplier=interpolation,
+                        guidance_scale_overridden=request.guidance_scale_overridden,
                     )
                     logger.info(f"Using Wan 2.2 text-to-video ({model_key}) via ComfyUI GGUF")
 
@@ -1939,13 +2050,29 @@ class ComfyUIVideoGenerator:
                 # SVD retired 2026-05-29. Supported models: wan22-14b(-i2v),
                 # cogvideox-5b, cogvideox-5b-i2v.
                 result.error = (
-                    f"Unsupported video model '{model}'. Use wan22-14b, wan22-14b-i2v, "
-                    f"cogvideox-5b, or cogvideox-5b-i2v."
+                    f"Unsupported video model '{model}'. Use a Wan 2.2 model or "
+                    f"cogvideox-5b / cogvideox-5b-i2v."
                 )
                 return result
 
             # Apply Real-ESRGAN 2x upscale if requested
-            upscale = request.metadata.get("upscale", False) if request.metadata else False
+            metadata = request.metadata or {}
+            cinema_plus = bool(metadata.get("cinema_plus", False))
+            family = self._model_family(model)
+            if cinema_plus:
+                if family != "wan":
+                    result.error = "Cinema+ is only available for Wan workflows."
+                    return result
+                if not self.comfy_node_available("DaSiWa_RTX_UpscalerRefiner"):
+                    result.error = (
+                        "Cinema+ requires the DaSiWa_RTX_UpscalerRefiner ComfyUI node. "
+                        "Install or restart the DaSiWa custom nodes, then retry."
+                    )
+                    return result
+
+            # Cinema+ owns the upscale stage; ignore a stale legacy Real-ESRGAN
+            # flag from an older restored form instead of stacking two scalers.
+            upscale = (not cinema_plus) and bool(metadata.get("upscale", False))
             if upscale:
                 # Find VHS_VideoCombine and its current frame source
                 vhs_node_id = next(
@@ -1958,14 +2085,36 @@ class ComfyUIVideoGenerator:
                     if source_ref:
                         self._add_upscale_node(workflow, source_ref, vhs_node_id)
 
+            # Cinema+ is intentionally a single serial post-processing path:
+            # generated frames -> RIFE (already inserted by the builder) -> RTX
+            # VSR -> VHS. This avoids the imported workflow's ambiguous switch
+            # branches and keeps the preset model/capability dependent.
+            if cinema_plus:
+                vhs_node_id = next(
+                    (nid for nid, node in workflow.items() if node.get("class_type") == "VHS_VideoCombine"),
+                    None,
+                )
+                if vhs_node_id:
+                    source_ref = workflow[vhs_node_id]["inputs"].get("images", [None])[0]
+                    if source_ref:
+                        self._add_rtx_upscale_node(workflow, source_ref, vhs_node_id)
+
             # Apply FaceRestore if requested (requires facerestore_cf custom node)
             if request.face_restore:
+                family = self._model_family(model)
                 try:
                     from backend.services.video_model_registry import is_model_installed
                     model_ready = is_model_installed("codeformer")
                 except Exception:
                     model_ready = False
-                if (
+                if family == "wan":
+                    logger.warning(
+                        "Face restore requested for Wan workflow but skipped: "
+                        "FaceRestoreCFWithModel is not reliable on the current Wan/GGUF "
+                        "graph shape and can hard-fail the render. Continuing without "
+                        "face restore."
+                    )
+                elif (
                     self.comfy_node_available("FaceRestoreModelLoader")
                     and self.comfy_node_available("FaceRestoreCFWithModel")
                     and model_ready
@@ -2132,8 +2281,13 @@ class ComfyUIVideoGenerator:
             else:
                 gen_timeout = max(400, int(base * scale * 0.7))
             logger.info(f"Waiting for ComfyUI to complete generation (prompt_id: {prompt_id}, timeout: {gen_timeout}s, steps: {steps}, upscale: {has_upscale}, high_res: {is_high_res}, fpb={fpb})...")
-            outputs = self._wait_for_completion(prompt_id, timeout=gen_timeout)
+            outputs = self._wait_for_completion(prompt_id, timeout=gen_timeout, cancel_event=getattr(request, 'cancel_event', None))
             progress_bridge.stop()  # /history poll owns completion; bridge is done
+
+            if outputs and outputs.get("_cancelled_by_event"):
+                result.success = False
+                result.error = "Cancelled by user"
+                return result
 
             if not outputs:
                 result.error = "ComfyUI generation timed out or failed"
@@ -2205,6 +2359,7 @@ class ComfyUIVideoGenerator:
                     logger.warning(f"Video registration into Documents failed (non-critical): {reg_err}")
 
             # Post-frame (incl. post-upscale) VRAM hygiene to prevent leaks across batches/frames.
+            # Local item-level torch cache clear only, to preserve warm-model ComfyUI reuse across batch items.
             try:
                 import torch
                 if torch.cuda.is_available():

@@ -13,6 +13,7 @@
 _COMFYUI_SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 install_comfyui_python_deps() {
+    set -o pipefail
     local SCRIPT_DIR PLUGIN_ROOT PROJECT_ROOT COMFYUI_DIR
     SCRIPT_DIR="$_COMFYUI_SCRIPTS_DIR"
     PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -49,8 +50,12 @@ install_comfyui_python_deps() {
         [ -f "$REQS_STAMP" ] && STAMP_HASH=$(cat "$REQS_STAMP" 2>/dev/null)
         if [ "$REQS_HASH" != "$STAMP_HASH" ]; then
             echo "Installing ComfyUI requirements..."
-            "$VENV_PYTHON" -m pip install -r "$COMFYUI_REQS" --quiet 2>&1 | tail -5
-            echo "$REQS_HASH" > "$REQS_STAMP"
+            if "$VENV_PYTHON" -m pip install -r "$COMFYUI_REQS" --quiet 2>&1 | tail -5; then
+                echo "$REQS_HASH" > "$REQS_STAMP"
+            else
+                echo "Error: ComfyUI requirements install failed" >&2
+                return 1
+            fi
         fi
 
         local PINNED_FE INSTALLED_FE
@@ -59,8 +64,25 @@ install_comfyui_python_deps() {
             INSTALLED_FE=$("$VENV_PYTHON" -c "import comfyui_frontend_package as f; print(getattr(f,'__version__',''))" 2>/dev/null || true)
             if [ "$INSTALLED_FE" != "$PINNED_FE" ]; then
                 echo "ComfyUI frontend drift ('$INSTALLED_FE' != '$PINNED_FE') — reinstalling..."
-                "$VENV_PYTHON" -m pip install --quiet "comfyui-frontend-package==$PINNED_FE" 2>&1 | tail -3
+                if ! "$VENV_PYTHON" -m pip install --quiet "comfyui-frontend-package==$PINNED_FE" 2>&1 | tail -3; then
+                    echo "Error: comfyui-frontend-package reinstall failed" >&2
+                    return 1
+                fi
             fi
+        fi
+    fi
+
+    # This Comfy fork hard-depends on comfy-aimdo at import time, and asset
+    # hashing expects blake3. Requirements installs can partially fail on
+    # WSL/NTFS, so verify these imports explicitly instead of trusting stamps.
+    local CORE_RUNTIME_DEPS=()
+    "$VENV_PYTHON" -c 'import comfy_aimdo.control' >/dev/null 2>&1 || CORE_RUNTIME_DEPS+=('comfy-aimdo==0.4.10')
+    "$VENV_PYTHON" -c 'from blake3 import blake3' >/dev/null 2>&1 || CORE_RUNTIME_DEPS+=('blake3')
+    if [ ${#CORE_RUNTIME_DEPS[@]} -gt 0 ]; then
+        echo "Installing ComfyUI runtime-critical deps: ${CORE_RUNTIME_DEPS[*]}"
+        if ! "$VENV_PYTHON" -m pip install "${CORE_RUNTIME_DEPS[@]}" --quiet 2>&1 | tail -5; then
+            echo "Error: ComfyUI runtime-critical dependency install failed" >&2
+            return 1
         fi
     fi
 
@@ -98,6 +120,7 @@ install_comfyui_python_deps() {
             if [ "$CN_HASH" != "$CN_STAMP_HASH" ]; then
                 echo "Installing custom-node requirements..."
                 set +e
+                local cn_failed=0
                 for req in $CN_REQ_FILES; do
                     local node_name
                     node_name=$(basename "$(dirname "$req")")
@@ -105,10 +128,15 @@ install_comfyui_python_deps() {
                     "$VENV_PYTHON" -m pip install -r "$req" --quiet 2>&1 | tail -2
                     if [ $? -ne 0 ]; then
                         echo "    WARNING: pip install failed for $node_name (node may be disabled at runtime)."
+                        cn_failed=1
                     fi
                 done
                 set -e
-                echo "$CN_HASH" > "$CN_STAMP"
+                if [ "$cn_failed" -eq 0 ]; then
+                    echo "$CN_HASH" > "$CN_STAMP"
+                else
+                    rm -f "$CN_STAMP"
+                fi
             fi
         fi
     fi
@@ -138,7 +166,10 @@ install_comfyui_python_deps() {
     "$VENV_PYTHON" -c 'import imageio_ffmpeg' >/dev/null 2>&1 || VIDEO_DEPS_MISSING+=('imageio-ffmpeg')
     if [ ${#VIDEO_DEPS_MISSING[@]} -gt 0 ]; then
         echo "Installing video-critical ComfyUI deps: ${VIDEO_DEPS_MISSING[*]}"
-        "$VENV_PYTHON" -m pip install "${VIDEO_DEPS_MISSING[@]}" --quiet 2>&1 | tail -5
+        if ! "$VENV_PYTHON" -m pip install "${VIDEO_DEPS_MISSING[@]}" --quiet 2>&1 | tail -5; then
+            echo "Error: video-critical ComfyUI dependency install failed" >&2
+            return 1
+        fi
     fi
 
     # Common lightweight custom-node deps
@@ -151,13 +182,16 @@ install_comfyui_python_deps() {
     done
     if [ ${#OPTIONAL_MISSING[@]} -gt 0 ]; then
         echo "Installing common ComfyUI custom-node deps: ${OPTIONAL_MISSING[*]}"
-        "$VENV_PYTHON" -m pip install "${OPTIONAL_MISSING[@]}" --quiet 2>&1 | tail -5
+        "$VENV_PYTHON" -m pip install "${OPTIONAL_MISSING[@]}" --quiet 2>&1 | tail -5 || true
     fi
 
     # websocket-client — ComfyUI progress bridge + outreach scrapers (not always pulled by node reqs)
     if ! "$VENV_PYTHON" -c 'import websocket' >/dev/null 2>&1; then
         echo "Installing websocket-client..."
-        "$VENV_PYTHON" -m pip install 'websocket-client==1.8.0' --quiet 2>&1 | tail -2
+        if ! "$VENV_PYTHON" -m pip install 'websocket-client==1.8.0' --quiet 2>&1 | tail -2; then
+            echo "Error: websocket-client install failed" >&2
+            return 1
+        fi
     fi
 }
 

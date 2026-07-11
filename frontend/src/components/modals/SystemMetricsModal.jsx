@@ -61,7 +61,7 @@ const SystemMetricsModal = ({ open, onClose }) => {
     
     if (open) {
       fetchMetrics();
-      const id = setInterval(fetchMetrics, Math.max(METRICS_POLL_INTERVAL_MS, 10000));
+      const id = setInterval(fetchMetrics, Math.max(METRICS_POLL_INTERVAL_MS, 2000));
       return () => {
         isMounted = false;
         clearInterval(id);
@@ -82,8 +82,9 @@ const SystemMetricsModal = ({ open, onClose }) => {
   const showLabels = size.w >= 130;
   const showValues = size.w >= 110;
 
-  const MetricRow = ({ label, value }) => {
+  const MetricRow = ({ label, value, absoluteUsed, absoluteTotal }) => {
     const safeValue = (value !== null && value !== undefined && !isNaN(value)) ? value : null;
+    const hasAbsolute = Number.isFinite(Number(absoluteUsed)) && Number.isFinite(Number(absoluteTotal));
     const barH = Math.max(3, Math.round(6 * scale));
     const fontSize = Math.max(0.5, 0.75 * scale);
     const gap = Math.max(2, Math.round(6 * scale));
@@ -140,9 +141,16 @@ const SystemMetricsModal = ({ open, onClose }) => {
                 color: getBarColor(safeValue),
                 fontWeight: "medium",
                 lineHeight: 1.2,
+                whiteSpace: "nowrap",
               }}
             >
-              {safeValue !== null ? Math.round(safeValue) : "—"}
+              {safeValue !== null ? (
+                hasAbsolute ? (
+                  `${Math.round(absoluteUsed)}MB / ${Math.round(absoluteTotal)}MB`
+                ) : (
+                  `${Math.round(safeValue)}%`
+                )
+              ) : "—"}
             </Typography>
           )}
         </Box>
@@ -316,8 +324,9 @@ const SystemMetricsModal = ({ open, onClose }) => {
                           GPU
                         </Typography>
                       )}
-                      <MetricRow label="Memory" value={metrics?.gpu_mem ?? null} />
-                      <MetricRow label="Utilization" value={metrics?.gpu_percent ?? null} />
+                      <MetricRow label="VRAM" value={metrics?.gpu_mem ?? null} absoluteUsed={metrics?.gpu_mem_used_mb} absoluteTotal={metrics?.gpu_mem_total_mb} />
+                      <MetricRow label="Shared VRAM" value={metrics?.gpu_shared_mem ?? null} absoluteUsed={metrics?.gpu_shared_mem_used_mb} absoluteTotal={metrics?.gpu_shared_mem_total_mb} />
+                      <MetricRow label="GPU util %" value={metrics?.gpu_percent ?? null} />
                       <MetricRow label="Temperature" value={metrics?.gpu_temp ?? null} />
                     </Box>
                   )}
@@ -341,8 +350,9 @@ const SystemMetricsModal = ({ open, onClose }) => {
                         CPU
                       </Typography>
                     )}
-                    <MetricRow label="Memory" value={metrics?.cpu_mem ?? null} />
-                    <MetricRow label="Utilization" value={metrics?.cpu_percent ?? null} />
+                    <MetricRow label="MEM" value={metrics?.cpu_mem ?? null} absoluteUsed={metrics?.cpu_mem_used_mb} absoluteTotal={metrics?.cpu_mem_total_mb} />
+                    <MetricRow label="SWAP" value={metrics?.swap_mem ?? null} absoluteUsed={metrics?.swap_mem_used_mb} absoluteTotal={metrics?.swap_mem_total_mb} />
+                    <MetricRow label="CPU util %" value={metrics?.cpu_percent ?? null} />
                     <MetricRow label="Temperature" value={metrics?.cpu_temp ?? null} />
                   </Box>
 

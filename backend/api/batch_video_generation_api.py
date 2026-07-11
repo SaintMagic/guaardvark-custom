@@ -16,6 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
+import requests
+
 from flask import Blueprint, request, send_file
 from werkzeug.utils import secure_filename
 
@@ -108,6 +110,45 @@ def _parse_list(value) -> List[str]:
 def _parse_int(value):
     if value is None or value == "":
         return None
+
+
+def _parse_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _cinema_plus_available() -> bool:
+    """Return whether the active ComfyUI exposes the DaSiWa RTX node."""
+    try:
+        from backend.config import COMFYUI_URL
+    except Exception:
+        COMFYUI_URL = os.environ.get("GUAARDVARK_COMFYUI_URL", "http://127.0.0.1:8188")
+    try:
+        response = requests.get(
+            f"{COMFYUI_URL.rstrip('/')}/object_info/DaSiWa_RTX_UpscalerRefiner",
+            timeout=3,
+        )
+        return response.ok and "DaSiWa_RTX_UpscalerRefiner" in response.json()
+    except Exception:
+        return False
+
+
+def _video_request_metadata(data: dict) -> dict:
+    """Normalize post-processing flags without losing user metadata."""
+    raw_metadata = data.get("metadata")
+    metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+    metadata["upscale"] = _parse_bool(data.get("upscale", metadata.get("upscale", False)))
+    metadata["cinema_plus"] = _parse_bool(
+        data.get("cinema_plus", metadata.get("cinema_plus", False))
+    )
+    if data.get("teacache_threshold"):
+        metadata["teacache_threshold"] = float(data["teacache_threshold"])
+    if data.get("feta_weight"):
+        metadata["feta_weight"] = float(data["feta_weight"])
+    return metadata
     try:
         return int(value)
     except Exception:
@@ -151,6 +192,11 @@ def generate_text_to_video_batch():
             "motion_strength": float(data.get("motion_strength", 1.0)),
             "num_inference_steps": int(data.get("num_inference_steps", 25)),
             "guidance_scale": float(data.get("guidance_scale", 7.5)),
+            # New clients send this explicitly. Older direct API callers that
+            # provide guidance_scale still get the intuitive explicit behavior.
+            "guidance_scale_overridden": _parse_bool(
+                data.get("guidance_scale_overridden", "guidance_scale" in data)
+            ),
             "seed": _parse_int(data.get("seed")),
             "generate_frames_only": str(data.get("generate_frames_only", "false")).lower() == "true",
             "frames_per_batch": int(data.get("frames_per_batch", 1)),
@@ -175,12 +221,7 @@ def generate_text_to_video_batch():
             # keyframe (which then seeds I2V) — selecting cast implies cinematic mode.
             "subject_ids": _parse_list(data.get("subject_ids")),
             "storyboard_concept": storyboard_concept or None,
-            "metadata": {
-                **(data.get("metadata") or {}),
-                "upscale": str(data.get("upscale", "false")).lower() == "true",
-                "teacache_threshold": float(data.get("teacache_threshold")) if data.get("teacache_threshold") else None,
-                "feta_weight": float(data.get("feta_weight")) if data.get("feta_weight") else None,
-            },
+            "metadata": _video_request_metadata(data),
         }
 
         generator = get_batch_video_generator()
@@ -223,6 +264,9 @@ def generate_image_to_video_batch():
             "motion_strength": float(data.get("motion_strength", 1.0)),
             "num_inference_steps": int(data.get("num_inference_steps", 25)),
             "guidance_scale": float(data.get("guidance_scale", 7.5)),
+            "guidance_scale_overridden": _parse_bool(
+                data.get("guidance_scale_overridden", "guidance_scale" in data)
+            ),
             "seed": _parse_int(data.get("seed")),
             "generate_frames_only": str(data.get("generate_frames_only", "false")).lower() == "true",
             "frames_per_batch": int(data.get("frames_per_batch", 1)),
@@ -242,12 +286,7 @@ def generate_image_to_video_batch():
             "cinematic_keyframe": str(data.get("cinematic_keyframe", "false")).lower() == "true",
             "ui_config": data.get("ui_config"),
             "director_guidance": data.get("director_guidance") or None,
-            "metadata": {
-                **(data.get("metadata") or {}),
-                "upscale": str(data.get("upscale", "false")).lower() == "true",
-                "teacache_threshold": float(data.get("teacache_threshold")) if data.get("teacache_threshold") else None,
-                "feta_weight": float(data.get("feta_weight")) if data.get("feta_weight") else None,
-            },
+            "metadata": _video_request_metadata(data),
         }
 
         generator = get_batch_video_generator()
@@ -534,6 +573,23 @@ def get_preview(batch_id: str):
 def cancel_batch(batch_id: str):
     """Cancel a running or stale batch."""
     try:
+        payload = request.get_json(silent=True) or {}
+        request_details = {
+            "remote_addr": request.remote_addr,
+            "origin": request.headers.get("Origin"),
+            "referer": request.headers.get("Referer"),
+            "user_agent": request.headers.get("User-Agent"),
+            "source": payload.get("source"),
+        }
+        if payload.get("confirmed") is not True:
+            logger.warning(
+                "Rejected unconfirmed video batch cancellation for %s: %s",
+                batch_id,
+                request_details,
+            )
+            return error_response("Cancellation requires explicit confirmation", 400)
+
+        logger.info("Confirmed video batch cancellation for %s: %s", batch_id, request_details)
         generator = get_batch_video_generator()
         if generator.cancel_batch(batch_id):
             return success_response({"batch_id": batch_id, "message": "Batch cancelled"})
@@ -832,10 +888,16 @@ def _resolve_download_plan(model_id: str) -> List[str]:
 def list_video_models():
     """List all video models and their installation status."""
     try:
+        rtx_available = _cinema_plus_available()
         models = []
         for model_id, info in VIDEO_MODEL_REGISTRY.items():
             plan = _resolve_download_plan(model_id)
             requires = info.get("requires", [])
+            file_ready = all(_check_model_downloaded(e) for e in plan)
+            node_report = None
+            if info.get("workflow_adapter") == "ltx23_director":
+                from backend.services.ltx_director_service import get_ltx_director_service
+                node_report = get_ltx_director_service().readiness(model_id)
             models.append({
                 "id": model_id,
                 "name": info["name"],
@@ -846,11 +908,19 @@ def list_video_models():
                 # is_downloaded = this model's own files present.
                 # is_ready = model + every required companion present (truly usable).
                 "is_downloaded": _check_model_downloaded(model_id),
-                "is_ready": all(_check_model_downloaded(e) for e in plan),
+                "is_ready": file_ready and (node_report is None or node_report.get("ready", False)),
                 # The exact files still missing (model + companions) — empty when
                 # ready. Makes a partial/wrong-quant install diagnosable (issue #36).
                 "missing_files": _missing_check_files(model_id),
                 "requires": requires,
+                "required_nodes": info.get("required_nodes", []),
+                "missing_nodes": (node_report or {}).get("missing_nodes", []),
+                "incompatible_nodes": (node_report or {}).get("incompatible_nodes", []),
+                "capabilities": {
+                    # Cinema+ is a generated Wan workflow extension, not a
+                    # generic post-processing checkbox for CogVideoX/LTX.
+                    "cinema_plus": info["type"] == "wan" and rtx_available,
+                },
                 # Total bytes an Install click will fetch (model + missing deps).
                 "install_size_gb": round(
                     sum(VIDEO_MODEL_REGISTRY[e]["size_gb"]
@@ -947,13 +1017,32 @@ def download_video_model():
             def _pull_one(einfo, local_dir):
                 """Pull a single registry entry's files into local_dir."""
                 if "direct_urls" in einfo:
-                    import urllib.request
+                    import requests
                     for spec in einfo["direct_urls"]:
                         dst = local_dir / spec["dst"]
                         if dst.exists() and dst.stat().st_size > 0:
                             continue
                         dst.parent.mkdir(parents=True, exist_ok=True)
-                        urllib.request.urlretrieve(spec["url"], str(dst))
+                        tmp = dst.with_suffix(dst.suffix + ".part")
+                        headers = {"User-Agent": "guaardvark-model-downloader/1.0"}
+                        token = os.getenv("CIVITAI_API_TOKEN") or os.getenv("CIVITAI_TOKEN")
+                        if token:
+                            headers["Authorization"] = f"Bearer {token}"
+                        # requests strips Authorization when Civitai redirects to
+                        # signed object storage; urllib keeps it and the signed
+                        # URL rejects the request.
+                        with requests.get(spec["url"], headers=headers, stream=True, timeout=(30, 120)) as resp:
+                            if resp.status_code == 401:
+                                raise RuntimeError(
+                                    "Civitai download requires a valid CIVITAI_API_TOKEN (or CIVITAI_TOKEN). "
+                                    f"Unauthorized URL: {spec['url']}"
+                                )
+                            resp.raise_for_status()
+                            with open(tmp, "wb") as f:
+                                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                                    if chunk:
+                                        f.write(chunk)
+                        tmp.replace(dst)
                 elif "files" in einfo:
                     # Explicit per-file pulls: only the bytes we actually need,
                     # placed at the exact name ComfyUI's loaders expect.
@@ -1122,4 +1211,3 @@ def get_video_model_download_status():
     except Exception as e:
         logger.error(f"Error getting download status: {e}")
         return error_response(str(e), 500)
-

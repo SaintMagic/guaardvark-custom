@@ -6,14 +6,14 @@
   "author": "GUAARDVARK Team",
   "type": "service",
   "category": "generation",
-  "port": 8188,
+  "port": 8191,
   "vram_estimate_mb": 6000,
   "core": false,
   "dependencies": [],
   "config": {
     "default_enabled": true,
     "default_auto_start": false,
-    "service_url": "http://127.0.0.1:8188",
+    "service_url": "http://127.0.0.1:8191",
     "timeout": 60,
     "fallback_enabled": true
   },

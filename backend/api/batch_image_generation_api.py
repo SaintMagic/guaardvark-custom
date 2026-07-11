@@ -81,12 +81,15 @@ model_download_lock = threading.Lock()
 # Approximate model sizes in GB (HuggingFace repo total). Curated set only —
 # matches offline_image_generator.available_models after the 2026-05-29 cull.
 IMAGE_MODEL_SIZES = {
-    "Tongyi-MAI/Z-Image-Turbo": 16.0,
-    "stabilityai/stable-diffusion-xl-base-1.0": 6.9,
-    "stabilityai/sdxl-turbo": 6.9,
-    "SG161222/Realistic_Vision_V5.1_noVAE": 2.1,
-    "emilianJR/epiCRealism": 2.1,
-    "runwayml/stable-diffusion-v1-5": 4.3,  # hidden fallback
+    "zimage-turbo": 21.0,
+    "sd-xl": 6.9,
+    "sdxl-turbo": 6.9,
+    "realistic-vision": 2.1,
+    "epic-realism": 2.1,
+    "sd-1.5": 4.3,  # hidden fallback
+    "reanimate-v20": 3.9,
+    "reanimate-v30": 3.9,
+    "dasiwa-anima": 3.9,
 }
 
 def _validate_csv_upload(file):
@@ -155,16 +158,16 @@ def _parse_generation_params(data: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict
     # 'auto' is allowed: the generator's router picks the best downloaded model.
     try:
         from backend.services.offline_image_generator import get_image_generator
-        valid_models = set(get_image_generator().available_models.keys()) | {'auto'}
+        valid_models = set(get_image_generator().get_available_models().keys()) | {'auto'}
     except Exception:
         valid_models = {'auto'}
     model = data.get('model', 'auto')
     params['model'] = model if model in valid_models else 'auto'
 
     # Default image parameters
-    params['style'] = data.get('style', 'realistic')
-    params['width'] = int(data.get('width', 512))
-    params['height'] = int(data.get('height', 512))
+    params['style'] = data.get('style', 'neutral')
+    params['width'] = int(data.get('width', 1024))
+    params['height'] = int(data.get('height', 1024))
     params['steps'] = min(max(int(data.get('steps', 20)), 10), 50)  # 10-50 steps
 
     # Guidance scale - will be validated by SettingsValidator
@@ -317,7 +320,7 @@ def list_models():
                 "label": info.get("label", model_id),
                 "description": info.get("description", ""),
                 "recommended": info.get("recommended", False),
-                "size_gb": IMAGE_MODEL_SIZES.get(info["id"], 2.5),
+                "size_gb": IMAGE_MODEL_SIZES.get(model_id, 2.5),
             })
 
         return success_response({
@@ -388,13 +391,14 @@ def download_model():
                 def _monitor_progress():
                     while not stop_monitor.is_set():
                         try:
-                            downloaded = 0
+                            cache_downloaded = 0
+                            target_downloaded = 0
                             # Check HF cache for .incomplete files (active downloads)
                             cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
                             if cache_dir.exists():
                                 for f in cache_dir.rglob("*.incomplete"):
                                     try:
-                                        downloaded += f.stat().st_size
+                                        cache_downloaded += f.stat().st_size
                                     except OSError:
                                         pass
                             # Check target model directory for completed files
@@ -403,9 +407,15 @@ def download_model():
                                 for f in target_dir.rglob("*"):
                                     if f.is_file():
                                         try:
-                                            downloaded += f.stat().st_size
+                                            target_downloaded += f.stat().st_size
                                         except OSError:
                                             pass
+
+                            # During install, files may exist in both the HF cache and
+                            # the final model directory while save_pretrained() copies
+                            # them across. Summing both wildly overstates progress, so
+                            # track the larger of the two footprints instead.
+                            downloaded = max(cache_downloaded, target_downloaded)
 
                             elapsed = time.time() - _start_time
                             speed = (downloaded / (1024 * 1024)) / max(elapsed, 0.1)
@@ -608,7 +618,7 @@ def get_content_presets():
             "presets": presets,
             "styles": styles,
             "default_preset": "general",
-            "default_style": "realistic"
+            "default_style": "neutral"
         })
 
     except Exception as e:

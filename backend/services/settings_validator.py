@@ -87,6 +87,39 @@ MODEL_SETTINGS = {
         "best_for": ["versatile", "photorealism", "faces", "anatomy", "text", "high_res"],
         "warnings": [],  # Guidance is intentionally not used; UI disables the control and backend forces low value. Dynamic check below will warn on misuse.
         "max_dimensions": (1536, 1536)
+    },
+    "reanimate-v20": {
+        "guidance_range": (1.0, 8.0),
+        "recommended_guidance": 5.0,
+        "min_dimensions": (768, 768),
+        "recommended_dimensions": (1024, 1024),
+        "steps_range": (20, 50),
+        "recommended_steps": 30,
+        "best_for": ["anime", "character", "high_res"],
+        "warnings": [],
+        "max_dimensions": (1536, 1536)
+    },
+    "reanimate-v30": {
+        "guidance_range": (1.0, 8.0),
+        "recommended_guidance": 5.0,
+        "min_dimensions": (768, 768),
+        "recommended_dimensions": (1024, 1024),
+        "steps_range": (20, 50),
+        "recommended_steps": 30,
+        "best_for": ["anime", "character", "high_res"],
+        "warnings": [],
+        "max_dimensions": (1536, 1536)
+    },
+    "dasiwa-anima": {
+        "guidance_range": (1.0, 8.0),
+        "recommended_guidance": 5.0,
+        "min_dimensions": (768, 768),
+        "recommended_dimensions": (1024, 1024),
+        "steps_range": (20, 50),
+        "recommended_steps": 30,
+        "best_for": ["anime", "character", "anatomy", "high_res"],
+        "warnings": [],
+        "max_dimensions": (1536, 1536)
     }
 }
 
@@ -236,4 +269,3 @@ def get_settings_validator() -> SettingsValidator:
     if _validator_instance is None:
         _validator_instance = SettingsValidator()
     return _validator_instance
-

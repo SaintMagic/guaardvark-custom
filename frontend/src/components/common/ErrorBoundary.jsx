@@ -75,11 +75,11 @@ class ErrorBoundary extends React.Component {
             </Box>
             
             <Typography variant="h4" gutterBottom color="error">
-              Something went wrong
+              {this.state.error ? this.state.error.toString() : "Something went wrong"}
             </Typography>
             
             <Typography variant="body1" color="text.secondary" paragraph>
-              The application encountered an unexpected error. This has been logged for investigation.
+              {this.state.error?.message || "The application encountered an unexpected error. This has been logged for investigation."}
             </Typography>
 
             <Stack direction="row" spacing={2} sx={{ mb: 3 }}>

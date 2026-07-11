@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { getCeleryHealth, getBackendHealth, getDbHealth, getRedisHealth } from '../api';
+import { getCeleryHealth, getBackendHealth, getDbHealth, getRedisHealth, getComfyUIHealth } from '../api';
 
 const HealthContext = createContext();
 
@@ -17,6 +17,7 @@ export const HealthProvider = ({ children }) => {
     db: null,
     celery: null,
     redis: null,
+    comfyui: null,
     lastUpdated: null,
     isLoading: false,
     errors: {}
@@ -39,10 +40,11 @@ export const HealthProvider = ({ children }) => {
       getBackendHealth(),
       getDbHealth(),
       getCeleryHealth(),
-      getRedisHealth()
+      getRedisHealth(),
+      getComfyUIHealth()
     ]);
 
-    const [backendRes, dbRes, celeryRes, redisRes] = results;
+    const [backendRes, dbRes, celeryRes, redisRes, comfyRes] = results;
 
     const celeryValue = celeryRes.status === 'fulfilled' ? celeryRes.value : null;
     const isCeleryBusy = celeryValue && (celeryValue.status === 'busy' || (celeryValue.message || '').toLowerCase().includes('busy'));
@@ -52,6 +54,7 @@ export const HealthProvider = ({ children }) => {
       db: dbRes.status === 'fulfilled' ? dbRes.value : null,
       celery: celeryValue,
       redis: redisRes.status === 'fulfilled' ? redisRes.value : null,
+      comfyui: comfyRes.status === 'fulfilled' ? comfyRes.value : null,
       lastUpdated: now,
       isLoading: false,
       errors: {
@@ -63,7 +66,8 @@ export const HealthProvider = ({ children }) => {
         celery: (celeryRes.status === 'rejected' || (celeryValue && celeryValue.status === 'down' && !isCeleryBusy))
           ? (celeryRes.reason?.message || celeryValue?.error)
           : null,
-        redis: redisRes.status === 'rejected' ? redisRes.reason?.message : null
+        redis: redisRes.status === 'rejected' ? redisRes.reason?.message : null,
+        comfyui: comfyRes.status === 'rejected' ? comfyRes.reason?.message : null,
       }
     };
 
@@ -116,6 +120,7 @@ export const HealthProvider = ({ children }) => {
     getBackendHealth: () => healthData.backend,
     getDbHealth: () => healthData.db,
     getRedisHealth: () => healthData.redis,
+    getComfyUIHealth: () => healthData.comfyui,
     getErrors: () => healthData.errors,
     isLoading: healthData.isLoading,
     lastUpdated: healthData.lastUpdated

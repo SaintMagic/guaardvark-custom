@@ -24,11 +24,21 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
+import time
 from typing import Iterator, Optional
 
 log = logging.getLogger(__name__)
 
-COMFYUI_URL = "http://127.0.0.1:8188"
+try:
+    from backend.config import COMFYUI_URL as _CONFIG_COMFYUI_URL
+except Exception:  # pragma: no cover - config import is environment-specific
+    _CONFIG_COMFYUI_URL = None
+
+COMFYUI_URL = os.environ.get(
+    "GUAARDVARK_COMFYUI_URL",
+    _CONFIG_COMFYUI_URL or "http://127.0.0.1:8191",
+)
 
 
 # --- Canonical VRAM reclaim (consolidates the scattered ad-hoc hacks) ---------
@@ -49,6 +59,22 @@ def free_comfyui_vram(*, timeout: float = 15.0) -> bool:
             json={"unload_models": True, "free_memory": True},
             timeout=timeout,
         )
+        # /free returns before CUDA allocations are fully released. Poll the
+        # prompt server briefly so the next fit-check sees the post-eviction
+        # state instead of the stale warm-model footprint.
+        settle_deadline = time.monotonic() + min(timeout, 5.0)
+        while time.monotonic() < settle_deadline:
+            try:
+                stats = requests.get(f"{COMFYUI_URL}/system_stats", timeout=2).json()
+                device = stats["devices"][0]
+                torch_total = int(device.get("torch_vram_total") or 0)
+                torch_free = int(device.get("torch_vram_free") or 0)
+                torch_used = max(torch_total - torch_free, 0)
+                if torch_total <= 134217728 or torch_used <= 268435456:
+                    break
+            except Exception:
+                break
+            time.sleep(0.25)
         log.info("comfyui VRAM freed")
         return True
     except Exception as e:  # noqa: BLE001
@@ -107,16 +133,24 @@ def _ensure_fits_or_busy(estimate_mb: int, slot: str, *, margin_mb: int = 1024) 
     against it inherently accounts for every consumer. If estimate + headroom won't fit,
     raise GpuBusyError so the caller gets a clean 'busy, retry' instead of a CUDA OOM or a
     hung allocation. Probe-unavailable (CPU-only host / no driver) admits — never blocks."""
-    try:
-        from backend.services.gpu_resource_coordinator import get_gpu_coordinator
-        info = get_gpu_coordinator().get_available_vram()
-    except Exception as e:  # noqa: BLE001
-        log.warning("VRAM fit-check probe failed (%s); admitting (advisory)", e)
-        return
-    if not info.get("success"):
-        return  # no usable GPU probe — do not block
-    free = int(info.get("available_mb") or 0)
     need = int(estimate_mb) + margin_mb
+    deadline = time.monotonic() + 8.0
+    free = 0
+    while True:
+        try:
+            from backend.services.gpu_resource_coordinator import get_gpu_coordinator
+            info = get_gpu_coordinator().get_available_vram()
+        except Exception as e:  # noqa: BLE001
+            log.warning("VRAM fit-check probe failed (%s); admitting (advisory)", e)
+            return
+        if not info.get("success"):
+            return  # no usable GPU probe — do not block
+        free = int(info.get("available_mb") or 0)
+        if free >= need or time.monotonic() >= deadline:
+            break
+        # ComfyUI/Ollama eviction can report success before NVML reflects the
+        # released pages. Reprobe briefly before rejecting an otherwise idle box.
+        time.sleep(0.5)
     if free < need:
         from backend.services.job_operation_gate import GpuBusyError
         raise GpuBusyError(
@@ -188,6 +222,8 @@ def _load_admit_or_busy(slot: str, *, ram_gb: float = 2.0):
     and drive it into swap-death. VRAM is the gate + _ensure_fits's job, so vram_gb=0 here
     — this guards system load only. Fail-OPEN (return None, proceed) if the gate/probe is
     unavailable. Returns the reserved JobWeight (release it on exit) or None."""
+    if os.environ.get("GUAARDVARK_DISABLE_LOAD_GATE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return None
     try:
         from backend.services.system_load_gate import get_load_gate, JobWeight, LoadGateTimeout
     except Exception:  # gate module / psutil unavailable -> fail open
@@ -274,19 +310,16 @@ def gpu_session(
                         _slot, lease_seconds=lease_seconds
                     )
                 reclaim_gpu(evict_ollama=evict_ollama, free_comfyui=free_comfyui)
-                # Strict admission (opt-in): after eviction, refuse with a clean "busy" if
-                # the estimate still won't physically fit — turns a CUDA OOM/hang into retry.
-                if require_fit and vram_estimate_mb:
-                    _ensure_fits_or_busy(vram_estimate_mb, _slot)
-                admit_ram_gb = ram_estimate_gb if ram_estimate_gb is not None else (
-                    2.0 if vram_estimate_mb else None
-                )
-                if admit_ram_gb is not None:
-                    # RAM/swap/loadavg admission (GlobalLoadGate) — heavy/budgeted jobs
-                    # only, so default (estimate-less) callers stay a pure gate pass-
-                    # through. Fail-fast (won't hang), fail-open (won't block on a probe
-                    # error). Serialize-don't-thrash WITHOUT touching output quality.
-                    load_weight = _load_admit_or_busy(_slot, ram_gb=admit_ram_gb)
+                # Let Comfy/PyTorch be the source of truth for VRAM capacity.
+                # Do NOT infer a RAM/load admission budget from vram_estimate_mb:
+                # video/image jobs are allowed to spill into system RAM/swap and we
+                # want the backend to surface a real CUDA/Comfy OOM if the host
+                # truly cannot keep up. RAM admission is now opt-in only via
+                # ram_estimate_gb.
+                if ram_estimate_gb is not None:
+                    # RAM/swap/loadavg admission (GlobalLoadGate) — explicit only.
+                    # Fail-fast (won't hang), fail-open (won't block on a probe error).
+                    load_weight = _load_admit_or_busy(_slot, ram_gb=ram_estimate_gb)
                 if vram_estimate_mb:
                     _orchestrator_request(_slot, vram_estimate_mb)
             yield acquired

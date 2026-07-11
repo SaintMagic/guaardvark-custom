@@ -61,7 +61,7 @@ class ImageGenerationRequest:
     height: int = 512
     num_inference_steps: int = 20
     guidance_scale: float = 7.5
-    style: str = "realistic"
+    style: str = "neutral"
     seed: Optional[int] = None
     model: str = "auto"
     content_preset: Optional[str] = None
@@ -141,6 +141,10 @@ class OfflineImageGenerator:
         self.base_negative = "low quality, blurry, distorted, watermark, signature, text, low resolution, pixelated, artifacts, noise, oversaturated, jpeg artifacts"
 
         self.style_configs = {
+            "neutral": {
+                "positive_suffix": "",
+                "negative_prompt": ""
+            },
             "realistic": {
                 "positive_suffix": "photorealistic, high quality, detailed, sharp focus, professional photography, natural lighting, realistic textures, correct proportions",
                 "negative_prompt": f"cartoon, anime, illustration, painting, drawing, art, sketch, 3d render, cgi, {self.anatomy_negative}, {self.base_negative}"
@@ -251,8 +255,19 @@ class OfflineImageGenerator:
 
         logger.info(f"OfflineImageGenerator initialized - Device: {self._device}, Models dir: {self.models_dir}")
 
+    def _canonical_model_key(self, model_ref: str) -> str:
+        if model_ref in self.available_models:
+            return model_ref
+        for key, repo_id in self.available_models.items():
+            if repo_id == model_ref:
+                return key
+        return model_ref
+
+    def _resolve_repo_id(self, model_ref: str) -> str:
+        return self.available_models.get(model_ref, model_ref)
+
     def _get_model_path(self, model_id: str) -> Path:
-        model_name = model_id.replace("/", "--")
+        model_name = self._canonical_model_key(model_id).replace("/", "--")
         return self.models_dir / model_name
 
     def _is_model_downloaded(self, model_id: str) -> bool:
@@ -265,11 +280,28 @@ class OfflineImageGenerator:
         Drives pipeline class, scheduler, VRAM strategy, and generation params.
         """
         mid = model_id.lower()
+        try:
+            from backend.services.comfyui_image_generator import get_available_anima_models
+            if model_id in get_available_anima_models():
+                return 'anima'
+        except Exception:
+            pass
         if 'z-image' in mid or 'zimage' in mid:
             return 'zimage'
         if 'xl' in mid or 'sdxl' in mid:
             return 'sdxl'
         return 'sd'
+
+    def _is_comfy_managed_model(self, model_ref: Optional[str]) -> bool:
+        """Return True when a request routes through the private Comfy backend."""
+        if not model_ref:
+            return False
+        try:
+            from backend.services.comfyui_image_generator import get_available_anima_models
+            comfy_models = get_available_anima_models()
+        except Exception:
+            return False
+        return model_ref in comfy_models
 
     def _build_img2img_pipeline(self, family: str):
         """Share weights from the loaded txt2img pipeline for img2img edits."""
@@ -313,10 +345,13 @@ class OfflineImageGenerator:
     # admission check pass while Z-Image actually allocated 9.9GB — straight into a
     # wall of resident Ollama models (gemma 4.95GB + qwen3-embedding 4.32GB). The
     # zimage figure is WITH model-cpu-offload enabled.
-    _FAMILY_VRAM_MB = {"zimage": 11000, "sdxl": 8000, "sd": 4000}
+    # Observed on the local RTX 4070: REanimaTE 3.0 completed around 9.8 GB used at
+    # 512x768 / 30 steps. Keep a modest estimate so the 1 GB admission headroom still
+    # blocks truly crowded cards, but do not reject a configuration that actually runs.
+    _FAMILY_VRAM_MB = {"zimage": 11000, "sdxl": 8000, "sd": 4000, "anima": 9000}
     # CPU-RAM footprint with enable_model_cpu_offload (weights + PyTorch arena).
     # Observed: ~47 GB RSS on 60 GB box during Z-Image batch; gate before load.
-    _FAMILY_RAM_GB = {"zimage": 24.0, "sdxl": 10.0, "sd": 6.0}
+    _FAMILY_RAM_GB = {"zimage": 24.0, "sdxl": 10.0, "sd": 6.0, "anima": 10.0}
 
     def _vram_estimate_mb(self, model_id: str) -> int:
         return self._FAMILY_VRAM_MB.get(self._model_family(model_id), 4000)
@@ -337,7 +372,7 @@ class OfflineImageGenerator:
           2. Register the slot with the orchestrator using the real estimate so
              its registry eviction + budget math operate on truth, not 3500.
         """
-        if self._pipeline is not None and self._current_model == model_id:
+        if self._pipeline is not None and self._current_model == self._canonical_model_key(model_id):
             return  # already resident — its VRAM is already spent
         estimate_mb = self._vram_estimate_mb(model_id)
         try:
@@ -405,7 +440,8 @@ class OfflineImageGenerator:
 
         try:
             model_path = self._get_model_path(model_id)
-            logger.info(f"Downloading model {model_id} to {model_path}")
+            repo_id = self._resolve_repo_id(model_id)
+            logger.info(f"Downloading model {model_id} ({repo_id}) to {model_path}")
 
             family = self._model_family(model_id)
             if family == 'zimage':
@@ -436,7 +472,7 @@ class OfflineImageGenerator:
             logger.info(f"Downloading with {pipeline_class.__name__} (family: {family})")
 
             pipeline = pipeline_class.from_pretrained(
-                model_id,
+                repo_id,
                 **load_kwargs
             )
 
@@ -458,7 +494,7 @@ class OfflineImageGenerator:
             return False
 
         try:
-            if self._pipeline and self._current_model == model_id:
+            if self._pipeline and self._current_model == self._canonical_model_key(model_id):
                 return True
 
             if self._pipeline:
@@ -580,7 +616,7 @@ class OfflineImageGenerator:
                     self._compile_unet_orig = None
                     self._compile_vae_orig = None
 
-            self._current_model = model_id
+            self._current_model = self._canonical_model_key(model_id)
             logger.info(f"Pipeline loaded successfully with model {model_id}")
             return True
 
@@ -938,26 +974,59 @@ Negative Prompt: {negative_prompt}""",
             from backend.services.job_operation_gate import GpuBusyError
             from backend.services.job_types import JobKind
             import uuid as _uuid_local
+            if request.model in (None, "", "auto"):
+                request.model = self._auto_select_model(request.prompt, request.style)
             ram_est = self._ram_estimate_gb(request.model or "auto")
             vram_est = self._vram_estimate_mb(request.model or "auto")
+            comfy_route = self._is_comfy_managed_model(request.model)
             try:
                 with gpu_session(JobKind.VIDEO_RENDER, f"gen_{_uuid_local.uuid4().hex[:8]}",
                                  on_busy="raise", evict_ollama=True,
+                                 free_comfyui=comfy_route,
                                  vram_estimate_mb=vram_est, ram_estimate_gb=ram_est,
                                  require_fit=True, cross_process=True):
-                    # Auto-router: pick the best downloaded model for this prompt.
-                    if request.model in (None, "", "auto"):
-                        request.model = self._auto_select_model(request.prompt, request.style)
+                    try:
+                        from backend.services.comfyui_image_generator import get_available_anima_models
+                        comfy_models = get_available_anima_models()
+                    except Exception:
+                        comfy_models = {}
                     # render type soft and drop characters. For text/logo intent, prefer
                     # non-turbo SDXL base (native 1024, full CFG steps) when it's downloaded.
                     if (
                         self._has_text_intent(request.prompt)
                         and "sd-xl" in self.available_models
+                        and request.model not in comfy_models
                         and request.model in (None, "", "auto", "zimage-turbo", "sdxl-turbo")
                     ):
                         if request.model != "sd-xl":
                             logger.info(f"Text intent: routing {request.model} -> sd-xl for crisper type")
                         request.model = "sd-xl"
+
+                    if request.model in comfy_models:
+                        from backend.services.comfyui_image_generator import ComfyUIImageGenerator
+                        import tempfile, os as _os
+                        out_path = _os.path.join(
+                            tempfile.gettempdir(),
+                            f"{request.model}_{int(time.time() * 1000)}.png",
+                        )
+                        path = ComfyUIImageGenerator(model=request.model).generate_image(
+                            prompt=request.prompt,
+                            loras=[],
+                            output_path=out_path,
+                            width=request.width,
+                            height=request.height,
+                            negative_prompt=request.negative_prompt or None,
+                            seed=request.seed if request.seed is not None else 42,
+                            steps=request.num_inference_steps,
+                            cfg=request.guidance_scale,
+                            model=request.model,
+                        )
+                        result.success = True
+                        result.image_path = path
+                        result.model_used = request.model
+                        result.seed_used = request.seed
+                        result.generation_time = time.time() - start_time
+                        return result
 
                     model_id = self.available_models.get(request.model, self.default_model)
                     logger.info(f"Using model: {request.model} -> {model_id}")
@@ -1537,9 +1606,26 @@ Negative Prompt: {negative_prompt}""",
                 "recommended": meta.get("recommended", False),
                 "order": meta.get("order", 99),
                 "downloaded": self._is_model_downloaded(model_id),
-                "current": model_id == self._current_model,
+                "current": model_key == self._current_model,
                 "size_estimate": "4-7GB" if "xl" not in model_id.lower() else "12-15GB"
             }
+
+        try:
+            from backend.services.comfyui_image_generator import get_available_anima_models
+            for idx, (model_key, meta) in enumerate(get_available_anima_models().items(), start=200):
+                models[model_key] = {
+                    "id": model_key,
+                    "name": model_key,
+                    "label": meta["label"],
+                    "description": meta["description"],
+                    "recommended": False,
+                    "order": idx,
+                    "downloaded": meta["downloaded"],
+                    "current": model_key == self._current_model,
+                    "size_estimate": "~4GB + shared Qwen encoder/VAE",
+                }
+        except Exception:
+            pass
 
         return models
 

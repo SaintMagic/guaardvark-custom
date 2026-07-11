@@ -1,14 +1,40 @@
 import { create } from "zustand";
 import { persist, createJSONStorage, subscribeWithSelector, devtools } from "zustand/middleware";
 
+const STORAGE_KEY = "guaardvark-app-storage";
+
+const getInitialPersistedUiState = () => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed?.state || parsed || null;
+  } catch {
+    return null;
+  }
+};
+
+const getInitialThemeName = () => {
+  return getInitialPersistedUiState()?.themeName || "guaardvark";
+};
+
+const getInitialSidebarExpanded = () => {
+  const persisted = getInitialPersistedUiState();
+  if (typeof persisted?.sidebarExpanded === "boolean") {
+    return persisted.sidebarExpanded;
+  }
+  return true;
+};
+
 const createUISlice = (set, get) => ({
-  themeName: "guaardvark",
+  themeName: getInitialThemeName(),
   setThemeName: (name) => set({ themeName: name }),
   
   dashboardLayout: [],
   setDashboardLayout: (layout) => set({ dashboardLayout: layout }),
   
-  sidebarExpanded: false,
+  sidebarExpanded: getInitialSidebarExpanded(),
   setSidebarExpanded: (expanded) => set({ sidebarExpanded: expanded }),
   toggleSidebar: () => set((state) => ({ sidebarExpanded: !state.sidebarExpanded })),
 
@@ -154,7 +180,7 @@ export const useAppStore = create(
           ...createDataSlice(set, get),
         }),
         {
-          name: "guaardvark-app-storage",
+          name: STORAGE_KEY,
           storage: createJSONStorage(() => localStorage),
           partialize: (state) => ({
             themeName: state.themeName,

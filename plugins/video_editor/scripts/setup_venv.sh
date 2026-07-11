@@ -9,9 +9,18 @@ REPO_ROOT="$(cd "$PLUGIN_DIR/../.." && pwd)"
 # make `rm -rf ""` resolve to the CWD. Refuse rather than risk it.
 [ -n "$PLUGIN_DIR" ] && [ -d "$PLUGIN_DIR" ] || { echo "FATAL: PLUGIN_DIR unresolved" >&2; exit 1; }
 [ -n "$REPO_ROOT" ]  && [ -d "$REPO_ROOT"  ] || { echo "FATAL: REPO_ROOT unresolved"  >&2; exit 1; }
-PY="${PYTHON_CMD:-python3.12}"
+PY="${PYTHON_CMD:-$REPO_ROOT/backend/venv/bin/python}"
 INSTALL_PYTORCH="$REPO_ROOT/scripts/install_pytorch.sh"
 BACKEND_PY="$REPO_ROOT/backend/venv/bin/python"
+if [ ! -x "$PY" ]; then
+    if command -v /usr/bin/python3.12 >/dev/null 2>&1; then
+        PY="/usr/bin/python3.12"
+    elif command -v python3.12 >/dev/null 2>&1; then
+        PY="$(command -v python3.12)"
+    else
+        PY="$(command -v python3)"
+    fi
+fi
 TORCH_CHANNEL="$("$BACKEND_PY" -m backend.services.hardware_policy torch_channel 2>/dev/null || echo "")"
 
 log() { echo "  [video_editor/setup_venv] $*"; }

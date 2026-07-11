@@ -89,6 +89,65 @@ const debugLog = (...args) => {
   }
 };
 
+const SETTINGS_STORAGE_KEY = 'guaardvark.batchImageGenerator.settings.v1';
+
+const DEFAULT_PARAMS = {
+  model: 'auto',
+  style: 'neutral',
+  quality_preset: 'standard',
+  width: 1024,
+  height: 1024,
+  steps: 20,
+  guidance: 7.5,
+  max_workers: 2,
+  preserve_order: true,
+  generate_thumbnails: true,
+  save_metadata: true
+};
+
+const DEFAULT_IMAGE_SETTINGS = {
+  params: DEFAULT_PARAMS,
+  selectedPreset: 'auto',
+  quantity: 1,
+  inputMode: 'single',
+  lookAndFeel: ''
+};
+
+const sanitizeStoredParams = (params = {}) => {
+  const allowedKeys = Object.keys(DEFAULT_PARAMS);
+  return allowedKeys.reduce((acc, key) => {
+    acc[key] = params[key] ?? DEFAULT_PARAMS[key];
+    return acc;
+  }, {});
+};
+
+const loadStoredImageSettings = () => {
+  if (typeof window === 'undefined') return DEFAULT_IMAGE_SETTINGS;
+
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) return DEFAULT_IMAGE_SETTINGS;
+
+    const parsed = JSON.parse(raw);
+    return {
+      ...DEFAULT_IMAGE_SETTINGS,
+      ...parsed,
+      params: {
+        ...DEFAULT_PARAMS,
+        ...sanitizeStoredParams(parsed.params)
+      },
+      quantity: Number.isFinite(parsed.quantity) ? parsed.quantity : DEFAULT_IMAGE_SETTINGS.quantity,
+      inputMode: ['single', 'bulk', 'csv', 'blueprint'].includes(parsed.inputMode)
+        ? parsed.inputMode
+        : DEFAULT_IMAGE_SETTINGS.inputMode,
+      lookAndFeel: typeof parsed.lookAndFeel === 'string' ? parsed.lookAndFeel : ''
+    };
+  } catch (error) {
+    debugLog('Failed to load stored image generation settings', error);
+    return DEFAULT_IMAGE_SETTINGS;
+  }
+};
+
 // Utility function to sanitize text for display
 const sanitizeText = (text) => {
   if (!text) return '';
@@ -109,17 +168,18 @@ const BatchImageGeneratorPage = ({ embedded = false }) => {
   const [searchParams] = useSearchParams();
   const isXs = useMediaQuery(theme.breakpoints.down('sm'));
   const isSm = useMediaQuery(theme.breakpoints.between('sm', 'md'));
+  const storedImageSettings = useRef(loadStoredImageSettings()).current;
 
   // Calculate responsive columns for ImageList
   const imageListCols = isXs ? 2 : isSm ? 3 : 4;
 
   // State management
-  const [inputMode, setInputMode] = useState('single'); // 'single' (default, whole text as one prompt), 'bulk', 'csv', or 'blueprint'
+  const [inputMode, setInputMode] = useState(storedImageSettings.inputMode); // 'single' (default, whole text as one prompt), 'bulk', 'csv', or 'blueprint'
   const [batchItems, setBatchItems] = useState(''); // Bulk textarea input like FileGenerationPage
-  const [lookAndFeel, setLookAndFeel] = useState(''); // Style/aesthetic to apply to all prompts
+  const [lookAndFeel, setLookAndFeel] = useState(storedImageSettings.lookAndFeel); // Style/aesthetic to apply to all prompts
   const [csvFile, setCsvFile] = useState(null);
   const [blueprintFile, setBlueprintFile] = useState(null);
-  const [quantity, setQuantity] = useState(1); // Number of images to generate
+  const [quantity, setQuantity] = useState(storedImageSettings.quantity); // Number of images to generate
   const [activeBatch, setActiveBatch] = useState(null);
   const [batchHistory, setBatchHistory] = useState([]);
   const [generatedImages, setGeneratedImages] = useState([]);
@@ -137,7 +197,7 @@ const BatchImageGeneratorPage = ({ embedded = false }) => {
 
   // New: Content presets and quality enhancement state
   const [contentPresets, setContentPresets] = useState({});
-  const [selectedPreset, setSelectedPreset] = useState('auto'); // 'auto' = auto-detect
+  const [selectedPreset, setSelectedPreset] = useState(storedImageSettings.selectedPreset); // 'auto' = auto-detect
   const [autoEnhance, _setAutoEnhance] = useState(true);
   const [enhanceAnatomy, _setEnhanceAnatomy] = useState(true);
   const [enhanceFaces, _setEnhanceFaces] = useState(true);
@@ -155,19 +215,21 @@ const BatchImageGeneratorPage = ({ embedded = false }) => {
   }, [searchParams]);
 
   // Generation parameters
-  const [params, setParams] = useState({
-    model: 'auto',
-    style: 'realistic',
-    quality_preset: 'standard',
-    width: 512,
-    height: 512,
-    steps: 20,
-    guidance: 7.5,
-    max_workers: 2,
-    preserve_order: true,
-    generate_thumbnails: true,
-    save_metadata: true
-  });
+  const [params, setParams] = useState(storedImageSettings.params);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({
+        params: sanitizeStoredParams(params),
+        selectedPreset,
+        quantity,
+        inputMode,
+        lookAndFeel
+      }));
+    } catch (error) {
+      debugLog('Failed to store image generation settings', error);
+    }
+  }, [params, selectedPreset, quantity, inputMode, lookAndFeel]);
 
   // Refs
   const fileInputRef = useRef(null);
@@ -182,6 +244,7 @@ const BatchImageGeneratorPage = ({ embedded = false }) => {
 
   // Style options
   const styleOptions = [
+    { value: 'neutral', label: 'Neutral' },
     { value: 'realistic', label: 'Realistic' },
     { value: 'artistic', label: 'Artistic' },
     { value: 'cartoon', label: 'Cartoon' },
@@ -229,6 +292,7 @@ const BatchImageGeneratorPage = ({ embedded = false }) => {
   // Dimension presets
   const dimensionPresets = [
     // SD 1.5 / Standard presets
+    { label: 'Square (1024x1024)', width: 1024, height: 1024 },
     { label: 'Square (512x512)', width: 512, height: 512 },
     { label: 'Portrait (512x768)', width: 512, height: 768 },
     { label: 'Landscape (768x512)', width: 768, height: 512 },
@@ -634,10 +698,11 @@ const BatchImageGeneratorPage = ({ embedded = false }) => {
       let newParams = { ...prev, model: modelValue };
 
       // Adjust dimensions based on model capabilities.
-      // Modern high-res models (SDXL family, Z-Image) and 'auto' (router usually
-      // lands on one of these) generate native at 1024. The SD1.5-class photoreal
+      const isAnimaModel = ['reanimate-v20', 'reanimate-v30', 'dasiwa-anima'].includes(modelValue);
+
+      // Modern high-res models generate native at 1024. The SD1.5-class photoreal
       // finetunes (realistic-vision, epic-realism) are 512-native.
-      if (modelValue.includes('xl') || modelValue === 'zimage-turbo' || modelValue === 'auto') {
+      if (modelValue.includes('xl') || modelValue === 'zimage-turbo' || modelValue === 'auto' || isAnimaModel) {
         newParams.width = 1024;
         newParams.height = 1024;
       } else {

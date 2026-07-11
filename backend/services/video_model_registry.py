@@ -115,6 +115,110 @@ VIDEO_MODEL_REGISTRY = {
         "vram_mb": 11000,
         "type": "wan",
     },
+    # DaSiWa WAN 2.2 I2V Lightspeed variants — one HighNoise + one LowNoise file
+    # per preset. The page recommends 4-step generation at CFG 1, with the GGUF
+    # line preferring UniPC_BH2/Simple and the FP8 safetensors line preferring
+    # Euler/Simple (or Euler/linear_quadratic).
+    "wan22-snatchkiss-i2v-gguf-q6": {
+        "name": "DaSiWa WAN 2.2 I2V Lightspeed (GGUF Q6)",
+        "description": "SnatchKiss High + Low GGUF pair. Q6 is the practical baseline; very good quality, 4-step fast path, native up to 720p. Requires both HighNoise + LowNoise experts.",
+        "local_subdir": "unet",
+        "requires": ["wan-vae", "wan-umt5"],
+        "direct_urls": [
+            {
+                "url": "https://civitai.red/api/download/models/2956320?type=Model&format=GGUF&size=full&quantType=Q6_K",
+                "dst": "HighNoise/DasiwaWAN22I2V14BLightspeed_snatchkissHighV11_Q6_K.gguf",
+            },
+            {
+                "url": "https://civitai.red/api/download/models/2957206?type=Model&format=GGUF&size=full&quantType=Q6_K",
+                "dst": "LowNoise/DasiwaWAN22I2V14BLightspeed_snatchkissLowV11_Q6_K.gguf",
+            },
+        ],
+        "workflow_defaults": {
+            "num_inference_steps": 4,
+            "guidance_scale": 1.0,
+            "sampler_name": "uni_pc",
+            "scheduler": "simple",
+        },
+        "size_gb": 23.5,
+        "vram_mb": 16000,
+        "type": "wan",
+    },
+    "wan22-snatchkiss-i2v-gguf-q8": {
+        "name": "DaSiWa WAN 2.2 I2V Lightspeed (GGUF Q8)",
+        "description": "SnatchKiss High + Low GGUF pair. Q8 is the quality ceiling; excellent fidelity, 4-step fast path, native up to 720p. Requires both HighNoise + LowNoise experts.",
+        "local_subdir": "unet",
+        "requires": ["wan-vae", "wan-umt5"],
+        "direct_urls": [
+            {
+                "url": "https://civitai.red/api/download/models/2956320?type=Model&format=GGUF&size=full&quantType=Q8_0",
+                "dst": "HighNoise/DasiwaWAN22I2V14BLightspeed_snatchkissHighV11_Q8_0.gguf",
+            },
+            {
+                "url": "https://civitai.red/api/download/models/2957206?type=Model&format=GGUF&size=full&quantType=Q8_0",
+                "dst": "LowNoise/DasiwaWAN22I2V14BLightspeed_snatchkissLowV11_Q8_0.gguf",
+            },
+        ],
+        "workflow_defaults": {
+            "num_inference_steps": 4,
+            "guidance_scale": 1.0,
+            "sampler_name": "uni_pc",
+            "scheduler": "simple",
+        },
+        "size_gb": 30.1,
+        "vram_mb": 16000,
+        "type": "wan",
+    },
+    "wan22-snatchkiss-i2v-fp8-pruned": {
+        "name": "DaSiWa WAN 2.2 I2V Lightspeed (FP8 pruned)",
+        "description": "SnatchKiss High + Low FP8 safetensors pair, pruned size. 4-step fast path, CFG 1, native up to 720p. Requires both HighNoise + LowNoise experts.",
+        "local_subdir": "unet",
+        "requires": ["wan-vae", "wan-umt5"],
+        "direct_urls": [
+            {
+                "url": "https://civitai.red/api/download/models/2953474",
+                "dst": "HighNoise/DasiwaWAN22I2V14BLightspeed_snatchkissHighV11_fp8_pruned.safetensors",
+            },
+            {
+                "url": "https://civitai.red/api/download/models/2953485",
+                "dst": "LowNoise/DasiwaWAN22I2V14BLightspeed_snatchkissLowV11_fp8_pruned.safetensors",
+            },
+        ],
+        "workflow_defaults": {
+            "num_inference_steps": 4,
+            "guidance_scale": 1.0,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+        },
+        "size_gb": 28.4,
+        "vram_mb": 16000,
+        "type": "wan",
+    },
+    "wan22-snatchkiss-i2v-fp8-full": {
+        "name": "DaSiWa WAN 2.2 I2V Lightspeed (FP8 full)",
+        "description": "SnatchKiss High + Low FP8 safetensors pair, full size. 4-step fast path, CFG 1, native up to 720p. Requires both HighNoise + LowNoise experts.",
+        "local_subdir": "unet",
+        "requires": ["wan-vae", "wan-umt5"],
+        "direct_urls": [
+            {
+                "url": "https://civitai.red/api/download/models/2953474?type=Model&format=SafeTensor&size=full&fp=fp8",
+                "dst": "HighNoise/DasiwaWAN22I2V14BLightspeed_snatchkissHighV11_fp8_full.safetensors",
+            },
+            {
+                "url": "https://civitai.red/api/download/models/2953485?type=Model&format=SafeTensor&size=full&fp=fp8",
+                "dst": "LowNoise/DasiwaWAN22I2V14BLightspeed_snatchkissLowV11_fp8_full.safetensors",
+            },
+        ],
+        "workflow_defaults": {
+            "num_inference_steps": 4,
+            "guidance_scale": 1.0,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+        },
+        "size_gb": 37.6,
+        "vram_mb": 16000,
+        "type": "wan",
+    },
     "wan22-5b": {
         "name": "Wan 2.2 TI2V-5B (fp16)",
         "description": "Single 5B text+image-to-video model built for 16GB cards — fits VRAM (no CPU offload, no 22GB MoE), fast. Native 1280x704 @ 24fps. The consumer-GPU answer to the A14B.",
@@ -208,6 +312,183 @@ VIDEO_MODEL_REGISTRY = {
         "size_gb": 0.07,
         "vram_mb": 0,
         "type": "upscaler",
+    },
+    # ── LTX 2.3 Director / DaSiWa OmniForge ────────────────────────────────────
+    # These paths mirror the workflow's documented ComfyUI model tree exactly.
+    # The main entries pull the mandatory shared runtime so an Install click does
+    # not leave a large but unusable checkpoint behind.
+    "ltx23-dasiwa-dragonleap-v4": {
+        "name": "DaSiWa LTX 2.3 DragonLeap V4",
+        "description": "Full LTX Director model for I2V, FLF2V, T2V, V2V and audio. "
+                       "Requires the LTX Director custom-node runtime and shared LTX assets.",
+        "local_subdir": "unet",
+        "direct_urls": [],
+        "check_files": ["LTX2/DasiwaLTX23_dragonleapV4.safetensors"],
+        "requires": [
+            "ltx23-video-vae", "ltx23-audio-vae", "ltx23-preview-vae",
+            "ltx23-text-encoder", "ltx23-text-projection",
+            "ltx23-spatial-upscaler",
+        ],
+        "required_nodes": [
+            "LTXDirector", "LTXDirectorGuide", "LTXDirectorCropGuides",
+            "LTXVConditioning", "LTXVLatentUpsampler", "LTXVConcatAVLatent",
+            "LTXVSeparateAVLatent", "LTXVAudioVAEDecode",
+            "VHS_VideoCombine",
+        ],
+        "workflow_adapter": "ltx23_director",
+        "workflow_defaults": {
+            "fps": 24, "guidance_scale": 1.0, "pass1_steps": 10,
+            "pass2_steps": 4, "pass3_steps": 2,
+            "sampler_name": "euler_cfg_pp", "scheduler": "linear_quadratic",
+        },
+        "size_gb": 27.16,
+        "vram_mb": 16000,
+        "type": "ltx23",
+    },
+    "ltx23-dev-gguf-unsloth-q8": {
+        "name": "LTX 2.3 DEV GGUF Unsloth Q8_0",
+        "description": "LTX 2.3 DEV GGUF Unsloth Q8_0 from Civitai model version 2751486. Requires ComfyUI-GGUF plus the full LTX runtime.",
+        "local_subdir": "unet",
+        "direct_urls": [{
+            "url": "https://civitai.com/api/download/models/2751486",
+            "dst": "LTX2/ltx23DEVGGUFUnsloth_q80.gguf",
+        }],
+        "requires": [
+            "ltx23-video-vae", "ltx23-audio-vae", "ltx23-preview-vae",
+            "ltx23-text-encoder", "ltx23-text-projection",
+            "ltx23-spatial-upscaler",
+        ],
+        "required_nodes": [
+            "UnetLoaderGGUF", "LTXDirector", "LTXDirectorGuide",
+            "LTXDirectorCropGuides", "LTXVConditioning", "LTXVLatentUpsampler",
+            "LTXVConcatAVLatent", "LTXVSeparateAVLatent",
+            "LTXVAudioVAEDecode", "VHS_VideoCombine",
+        ],
+        "workflow_adapter": "ltx23_director",
+        "workflow_defaults": {
+            "fps": 24, "guidance_scale": 1.0, "pass1_steps": 10,
+            "pass2_steps": 4, "pass3_steps": 2,
+            "sampler_name": "euler_cfg_pp", "scheduler": "linear_quadratic",
+        },
+        "size_gb": 22.22,
+        "vram_mb": 16000,
+        "type": "ltx23",
+    },
+    "ltx23-fp8-civitai-2752717": {
+        "name": "LTX 2.3 FP8 (Civitai)",
+        "description": "LTX 2.3 DEV FP8 safetensors from Civitai version 2752717. Native UNETLoader path; requires the shared LTX runtime.",
+        "local_subdir": "unet",
+        "direct_urls": [{
+            "url": "https://civitai.com/api/download/models/2752717",
+            "dst": "LTX2/ltx23_fp8.safetensors",
+        }],
+        "requires": [
+            "ltx23-video-vae", "ltx23-audio-vae", "ltx23-preview-vae",
+            "ltx23-text-encoder", "ltx23-text-projection",
+            "ltx23-spatial-upscaler",
+        ],
+        "required_nodes": [
+            "LTXDirector", "LTXDirectorGuide", "LTXDirectorCropGuides",
+            "LTXVConditioning", "LTXVLatentUpsampler", "LTXVConcatAVLatent",
+            "LTXVSeparateAVLatent", "LTXVAudioVAEDecode", "VHS_VideoCombine",
+        ],
+        "workflow_adapter": "ltx23_director",
+        "workflow_defaults": {
+            "fps": 24, "guidance_scale": 1.0, "pass1_steps": 10,
+            "pass2_steps": 4, "pass3_steps": 2,
+            "sampler_name": "euler_cfg_pp", "scheduler": "linear_quadratic",
+        },
+        "size_gb": 28.46,
+        "vram_mb": 16000,
+        "type": "ltx23",
+    },
+    "ltx23-video-vae": {
+        "name": "LTX 2.3 Video VAE (BF16)",
+        "description": "Mandatory LTX 2.3 video decoder.",
+        "local_subdir": "vae",
+        "direct_urls": [{
+            "url": "https://huggingface.co/Kijai/LTX2.3_comfy/resolve/main/vae/LTX23_video_vae_bf16.safetensors?download=true",
+            "dst": "LTX2/LTX23_video_vae_bf16.safetensors",
+        }],
+        "size_gb": 0.48, "vram_mb": 0, "type": "vae",
+    },
+    "ltx23-audio-vae": {
+        "name": "LTX 2.3 Audio VAE (BF16)",
+        "description": "Mandatory for generated, uploaded, and source-video audio modes.",
+        "local_subdir": "vae",
+        "direct_urls": [{
+            "url": "https://huggingface.co/Kijai/LTX2.3_comfy/resolve/main/vae/LTX23_audio_vae_bf16.safetensors?download=true",
+            "dst": "LTX2/LTX23_audio_vae_bf16.safetensors",
+        }],
+        "size_gb": 0.32, "vram_mb": 0, "type": "vae",
+    },
+    "ltx23-preview-vae": {
+        "name": "LTX 2.3 TAESD Preview VAE",
+        "description": "Low-cost latent preview decoder used while sampling.",
+        "local_subdir": "vae",
+        "direct_urls": [{
+            "url": "https://huggingface.co/Kijai/LTX2.3_comfy/resolve/main/vae/taeltx2_3.safetensors?download=true",
+            "dst": "LTX2/taeltx2_3.safetensors",
+        }],
+        "size_gb": 0.08, "vram_mb": 0, "type": "vae",
+    },
+    "ltx23-text-encoder": {
+        "name": "Gemma 3 12B Heretic v2 Text Encoder (FP8)",
+        "description": "Primary LTX 2.3 prompt encoder.",
+        "local_subdir": "text_encoders",
+        "direct_urls": [{
+            "url": "https://huggingface.co/DreamFast/gemma-3-12b-it-heretic-v2/resolve/main/comfyui/gemma-3-12b-it-heretic-v2_fp8_e4m3fn.safetensors?download=true",
+            "dst": "gemma-3-12b-it-heretic-v2_fp8_e4m3fn.safetensors",
+        }],
+        "size_gb": 12.0, "vram_mb": 0, "type": "encoder",
+    },
+    "ltx23-text-projection": {
+        "name": "LTX 2.3 Text Projection (BF16)",
+        "description": "Projection companion for the Gemma text encoder.",
+        "local_subdir": "text_encoders",
+        "direct_urls": [{
+            "url": "https://huggingface.co/Kijai/LTX2.3_comfy/resolve/main/text_encoders/ltx-2.3_text_projection_bf16.safetensors?download=true",
+            "dst": "ltx-2.3_text_projection_bf16.safetensors",
+        }],
+        "size_gb": 0.5, "vram_mb": 0, "type": "encoder",
+    },
+    "ltx23-spatial-upscaler": {
+        "name": "LTX 2.3 Spatial Latent Upscaler 2x",
+        "description": "Mandatory OmniForge second-pass spatial latent upscaler.",
+        "local_subdir": "latent_upscale_models",
+        "direct_urls": [{
+            "url": "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors?download=true",
+            "dst": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+        }],
+        "size_gb": 1.0, "vram_mb": 0, "type": "upscaler",
+    },
+    "ltx23-temporal-upscaler": {
+        "name": "LTX 2.3 Temporal Latent Upscaler 2x",
+        "description": "Optional native 2x frame-rate latent upscaler.",
+        "local_subdir": "latent_upscale_models",
+        "direct_urls": [{
+            "url": "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-temporal-upscaler-x2-1.0.safetensors?download=true",
+            "dst": "ltx-2.3-temporal-upscaler-x2-1.0.safetensors",
+        }],
+        "size_gb": 1.0, "vram_mb": 0, "type": "upscaler",
+    },
+    "ltx23-distilled-lora": {
+        "name": "LTX 2.3 Distilled LoRA 1.1",
+        "description": "Optional fast-path LoRA used by the uploaded OmniForge workflow.",
+        "local_subdir": "loras",
+        "direct_urls": [{
+            "url": "https://huggingface.co/TenStrip/LTX2.3_Distilled_Lora_1.1_Experiments/resolve/main/ltx-2.3-22b-distilled-lora-1.1_fro90_ceil72_condsafe.safetensors?download=true",
+            "dst": "LTX/ltx-2.3-22b-distilled-lora-1.1_fro90_ceil72_condsafe.safetensors",
+        }],
+        "size_gb": 0.9, "vram_mb": 0, "type": "lora",
+    },
+    "ltx23-bodyphysics-lora": {
+        "name": "DaSiWa LTX 2.3 Bodyphysics Fluid Motion Enhancer",
+        "description": "Local DaSiWa motion-enhancer LoRA supplied with the workflow bundle.",
+        "local_subdir": "loras",
+        "direct_urls": [],
+        "check_files": ["LTX/DaSiWa_LTX23_NSFW_Bodyphysics_Fluid_Motion_Enhancer_v01.safetensors"],
+        "size_gb": 0.75, "vram_mb": 0, "type": "lora",
     },
     # ── FLUX keyframe / storyboard IMAGE models ─────────────────────────────────
     # These are ComfyUI models (GGUF unet + encoders + VAE) that MUST live in
@@ -422,7 +703,10 @@ def wan_comfyui_map() -> dict:
         for mid, entry in VIDEO_MODEL_REGISTRY.items():
             if entry.get("type") != "wan":
                 continue
-            dsts = [f["dst"] for f in entry.get("files", [])]
+            if entry.get("files"):
+                dsts = [f["dst"] for f in entry.get("files", [])]
+            else:
+                dsts = [f["dst"] for f in entry.get("direct_urls", [])]
             high = next((d for d in dsts if "HighNoise" in d), None)
             low = next((d for d in dsts if "LowNoise" in d), None)
             vae = clip = None
@@ -443,6 +727,7 @@ def wan_comfyui_map() -> dict:
                 "unet_low": low,
                 "clip": clip,
                 "vae": vae,
+                "workflow_defaults": entry.get("workflow_defaults") or {},
             }
     except Exception as e:  # never break generation import over a registry quirk
         logger.error("wan_comfyui_map() build failed: %s", e, exc_info=True)

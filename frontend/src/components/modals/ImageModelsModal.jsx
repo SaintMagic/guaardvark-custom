@@ -89,15 +89,15 @@ const ImageModelsModal = ({ open, onClose, showMessage }) => {
     return () => clearInterval(interval);
   }, [open, downloadStatus.is_downloading, fetchDownloadStatus]);
 
-  const handleDownload = async (model_path) => {
+  const handleDownload = async (modelId) => {
     try {
-      const res = await axios.post("/api/batch-image/models/download", { model_path });
+      const res = await axios.post("/api/batch-image/models/download", { model_path: modelId });
       if (res.data.success) {
-        const model = models.find((m) => m.path === model_path);
-        showMessage?.(`Started downloading ${model?.name || model_path}...`, "info");
+        const model = models.find((m) => m.id === modelId);
+        showMessage?.(`Started downloading ${model?.name || modelId}...`, "info");
         setDownloadStatus({
           is_downloading: true,
-          current_model: model_path,
+          current_model: modelId,
           progress: 0,
           status: "starting",
           speed_mbps: 0,
@@ -136,7 +136,7 @@ const ImageModelsModal = ({ open, onClose, showMessage }) => {
         ) : (
           <List disablePadding>
             {models.map((model) => {
-              const isThis = isDownloading && currentModel === model.path;
+              const isThis = isDownloading && currentModel === model.id;
               return (
                 <ListItem key={model.id} divider sx={{ py: 1.5 }}>
                   <ListItemIcon>
@@ -186,7 +186,7 @@ const ImageModelsModal = ({ open, onClose, showMessage }) => {
                         variant="outlined"
                         size="small"
                         startIcon={<CloudDownloadIcon />}
-                        onClick={() => handleDownload(model.path)}
+                        onClick={() => handleDownload(model.id)}
                         disabled={isDownloading}
                       >
                         Install

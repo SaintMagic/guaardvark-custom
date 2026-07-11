@@ -7,6 +7,7 @@ workflows, with frame-by-frame generation for memory-constrained
 environments.
 """
 
+import copy
 import json
 import logging
 import os
@@ -95,6 +96,7 @@ class BatchVideoRequest:
     motion_strength: float = 1.0
     num_inference_steps: int = 25
     guidance_scale: float = 7.5
+    guidance_scale_overridden: bool = False
     seed: Optional[int] = None
     generate_frames_only: bool = False
     frames_per_batch: int = 1
@@ -118,6 +120,9 @@ class BatchVideoRequest:
     cinematic_keyframe: bool = False      # FLUX still -> Wan2.2 I2V per clip (forces serial render)
     director_guidance: Optional[str] = None  # optional free-text steer for the director
     storyboard_concept: Optional[str] = None  # expand ONE concept into len(items) connected shots
+    # Complete isolated LTX Director snapshot.  None keeps every existing
+    # Wan/CogVideo path byte-for-byte on the legacy generator.
+    ltx_config: Optional[Dict] = None
     metadata: Dict = field(default_factory=dict)
 
 
@@ -718,12 +723,17 @@ class BatchVideoGenerator:
                             motion_strength=batch_request.motion_strength,
                             num_inference_steps=batch_request.num_inference_steps,
                             guidance_scale=batch_request.guidance_scale,
+                            guidance_scale_overridden=batch_request.guidance_scale_overridden,
                             seed=batch_request.seed,
                             generate_frames_only=batch_request.generate_frames_only,
                             frames_per_batch=batch_request.frames_per_batch,
                             combine_frames=batch_request.combine_frames,
                             output_dir=batch_dir,
-                            metadata=meta,
+                            # Keep the batch identity on the per-video request
+                            # so ComfyUI progress can be routed to the correct
+                            # batch in the launcher instead of relying on a
+                            # global "latest video" fallback.
+                            metadata={**meta, "batch_id": batch_request.batch_id},
                             interpolation_multiplier=batch_request.interpolation_multiplier,
                             prompt_style=batch_request.prompt_style,
                             enhance_prompt=batch_request.enhance_prompt,
@@ -732,9 +742,25 @@ class BatchVideoGenerator:
                             face_restore=batch_request.face_restore,
                             lora_name=batch_request.lora_name,
                             lora_strength=batch_request.lora_strength,
+                            cancel_event=cancel_event,
                         )
 
-                        result: VideoGenerationResult = self.video_generator.generate_video(gen_request)
+                        if batch_request.ltx_config is not None:
+                            from backend.services.ltx_director_service import get_ltx_director_service
+                            ltx_config = dict(batch_request.ltx_config)
+                            # Per-item values win so the ordinary batch item and the LTX
+                            # workflow remain associated with the same prompt/source.
+                            ltx_config["prompt"] = item.prompt or ltx_config.get("prompt", "")
+                            if item.image_path and not ltx_config.get("source_image"):
+                                ltx_config["source_image"] = item.image_path
+                            result = get_ltx_director_service().generate(
+                                ltx_config,
+                                output_dir=batch_dir,
+                                batch_id=batch_request.batch_id,
+                                cancel_event=cancel_event,
+                            )
+                        else:
+                            result = self.video_generator.generate_video(gen_request)
                         br = BatchVideoResult(
                             item_id=item.id,
                             success=result.success,
@@ -944,6 +970,7 @@ class BatchVideoGenerator:
             motion_strength=float(params.get("motion_strength", 1.0)),
             num_inference_steps=int(params.get("num_inference_steps", 25)),
             guidance_scale=float(params.get("guidance_scale", 7.5)),
+            guidance_scale_overridden=bool(params.get("guidance_scale_overridden", False)),
             seed=seed_value,
             generate_frames_only=bool(params.get("generate_frames_only", False)),
             frames_per_batch=int(params.get("frames_per_batch", 1)),
@@ -962,6 +989,7 @@ class BatchVideoGenerator:
             cinematic_keyframe=bool(params.get("cinematic_keyframe", False)),
             director_guidance=params.get("director_guidance") or None,
             storyboard_concept=params.get("storyboard_concept") or None,
+            ltx_config=dict(params.get("ltx_config")) if isinstance(params.get("ltx_config"), dict) else None,
             metadata=params.get("metadata", {}),
         )
 
@@ -988,6 +1016,7 @@ class BatchVideoGenerator:
                 "motion_strength": batch_request.motion_strength,
                 "num_inference_steps": batch_request.num_inference_steps,
                 "guidance_scale": batch_request.guidance_scale,
+                "guidance_scale_overridden": batch_request.guidance_scale_overridden,
                 "seed": batch_request.seed,
                 "generate_frames_only": batch_request.generate_frames_only,
                 "frames_per_batch": batch_request.frames_per_batch,
@@ -1002,6 +1031,7 @@ class BatchVideoGenerator:
                 "lora_name": batch_request.lora_name,
                 "lora_strength": batch_request.lora_strength,
                 "metadata": dict(batch_request.metadata or {}),
+                "ltx_config": copy.deepcopy(batch_request.ltx_config),
                 # Exact control-panel snapshot for "Adjust & Retry" (restore the UI verbatim).
                 "ui_config": params.get("ui_config"),
             }
@@ -1102,7 +1132,7 @@ class BatchVideoGenerator:
                 return None
         return None
 
-    def cancel_batch(self, batch_id: str) -> bool:
+    def cancel_batch(self, batch_id: str, reason: str = "Cancelled by user") -> bool:
         """Cancel a queued or running batch.
 
         Two-layer interrupt: flip the cancel event (so the worker bails out
@@ -1124,20 +1154,27 @@ class BatchVideoGenerator:
             status.status = "cancelled"
             status.end_time = datetime.now()
             if not status.error:
-                status.error = "Cancelled by user"
+                status.error = reason
             self._save_metadata(status)
 
             if was_running:
                 # Force ComfyUI to abort the current sampler. Without this,
                 # cancel only fires between items — useless for a 20-min Wan run.
-                try:
-                    interrupted = self.video_generator.interrupt()
-                    logger.info(
-                        f"Cancel batch {batch_id}: running, interrupt sent "
-                        f"(ack={interrupted})"
-                    )
-                except Exception as e:
-                    logger.warning(f"Cancel batch {batch_id}: interrupt call failed: {e}")
+                # An orphan/connection-loss classification is different: ComfyUI
+                # may be busy or temporarily unreachable. Sending a later global
+                # /interrupt can kill an unrelated render after it reconnects.
+                orphaned = any(token in str(reason).lower() for token in ("orphan", "connection lost", "worker became unavailable"))
+                if orphaned:
+                    logger.warning("Cancel batch %s: orphan classification; not sending global ComfyUI interrupt", batch_id)
+                else:
+                    try:
+                        interrupted = self.video_generator.interrupt()
+                        logger.info(
+                            f"Cancel batch {batch_id}: running, interrupt sent "
+                            f"(ack={interrupted})"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Cancel batch {batch_id}: interrupt call failed: {e}")
             else:
                 logger.info(f"Cancel batch {batch_id}: queued, will skip when worker reaches it")
             return True
@@ -1153,7 +1190,7 @@ class BatchVideoGenerator:
                     data["status"] = "cancelled"
                     data["end_time"] = datetime.now().isoformat()
                     if not data.get("error"):
-                        data["error"] = "Cancelled by user"
+                        data["error"] = reason
                     with open(metadata_file, "w") as f:
                         json.dump(data, f, indent=2)
                     logger.info(f"Cancelled on-disk batch {batch_id}")
@@ -1291,11 +1328,8 @@ class BatchVideoGenerator:
         cancelled: List[str] = []
         for status in self.list_active_batches():
             batch_id = status.batch_id
-            if self.cancel_batch(batch_id):
+            if self.cancel_batch(batch_id, reason=reason):
                 cancelled.append(batch_id)
-                if not status.error:
-                    status.error = reason
-                    self._save_metadata(status)
 
         if cancelled:
             try:
@@ -1552,4 +1586,3 @@ def get_batch_video_generator() -> BatchVideoGenerator:
     if _batch_video_generator_instance is None:
         _batch_video_generator_instance = BatchVideoGenerator()
     return _batch_video_generator_instance
-

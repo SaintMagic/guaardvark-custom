@@ -20,6 +20,18 @@ export const getRedisHealth = async () => {
   return handleResponse(response, { quiet: true });
 };
 
+export const getComfyUIHealth = async () => {
+  const response = await fetch(`${BASE_URL}/gpu/comfyui/status`);
+  const payload = await handleResponse(response, { quiet: true });
+  const data = payload?.data || payload || {};
+  return {
+    running: data.comfyui_running === true,
+    status: data.comfyui_running === true ? "up" : "down",
+    url: data.comfyui_url || null,
+    nodeCount: data.custom_nodes_count ?? null,
+  };
+};
+
 export const getCeleryTasks = async () => {
   const response = await fetch(`${BASE_URL}/celery/tasks`);
   return handleResponse(response);

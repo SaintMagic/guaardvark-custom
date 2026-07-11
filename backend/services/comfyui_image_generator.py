@@ -28,10 +28,12 @@ import requests
 logger = logging.getLogger(__name__)
 
 try:
-    from backend.config import COMFYUI_URL
+    from backend.config import COMFYUI_URL, COMFYUI_DIR
     _COMFY_URL = COMFYUI_URL
+    _COMFY_DIR = COMFYUI_DIR
 except Exception:  # pragma: no cover - config import is environment-specific
     _COMFY_URL = os.environ.get("GUAARDVARK_COMFYUI_URL", "http://127.0.0.1:8188")
+    _COMFY_DIR = os.environ.get("GUAARDVARK_COMFYUI_DIR", "")
 
 # DiffusersLoader reads from ComfyUI/models/diffusers/<this>. Set up as a symlink
 # to the diffusers-format SDXL base by the LoRA-consistency wiring.
@@ -56,6 +58,56 @@ FLUX_DEV_UNET = os.environ.get("GUAARDVARK_FLUX_DEV_UNET", "flux1-dev.safetensor
 FLUX_DEV_T5 = os.environ.get("GUAARDVARK_FLUX_DEV_T5", "t5xxl_fp16.safetensors")
 FLUX_DEV_WEIGHT_DTYPE = os.environ.get("GUAARDVARK_FLUX_DEV_DTYPE", "fp8_e4m3fn")
 FLUX_DEV_GUIDANCE = float(os.environ.get("GUAARDVARK_FLUX_DEV_GUIDANCE", "3.5"))
+
+# ── Anima / REanimaTE — Qwen clip + VAE stack on top of UNETLoader ────────────
+ANIMA_CLIP = os.environ.get("GUAARDVARK_ANIMA_CLIP", "qwen_3_06b_base.safetensors")
+ANIMA_VAE = os.environ.get("GUAARDVARK_ANIMA_VAE", "qwen_image_vae.safetensors")
+ANIMA_DASIWA_CLIP = os.environ.get("GUAARDVARK_DASIWA_ANIMA_CLIP", ANIMA_CLIP)
+ANIMA_DEFAULT_LORAS = [
+    ("anima-highres-aesthetic-boost.safetensors", 0.40),
+    ("ZodaPlus.safetensors", 1.50),
+]
+ANIMA_MODEL_CATALOG = {
+    "reanimate-v20": {
+        "file": "reanimate_v20.safetensors",
+        "label": "REanimaTE 2.0",
+        "description": "Anima checkpoint with stronger anime cohesion and a polished 3D/CG lean.",
+        "clip": ANIMA_CLIP,
+        "vae": ANIMA_VAE,
+        "steps": 30,
+        "cfg": 5.0,
+        "sampler": "er_sde",
+        "scheduler": "beta",
+        "shift": 5.0,
+        "default_loras": ANIMA_DEFAULT_LORAS,
+    },
+    "reanimate-v30": {
+        "file": "reanimate_v30.safetensors",
+        "label": "REanimaTE 3.0",
+        "description": "Anima checkpoint tuned for more realism, contrast, brightness, and flexibility.",
+        "clip": ANIMA_CLIP,
+        "vae": ANIMA_VAE,
+        "steps": 30,
+        "cfg": 5.0,
+        "sampler": "er_sde",
+        "scheduler": "beta",
+        "shift": 5.0,
+        "default_loras": ANIMA_DEFAULT_LORAS,
+    },
+    "dasiwa-anima": {
+        "file": "dasiwaAnima_obsidianArchivesV2.safetensors",
+        "label": "DaSiWa Anima Obsidian",
+        "description": "DaSiWa Anima checkpoint. Uses the shared Qwen Anima encoder/vae stack.",
+        "clip": ANIMA_DASIWA_CLIP,
+        "vae": ANIMA_VAE,
+        "steps": 30,
+        "cfg": 5.0,
+        "sampler": "er_sde",
+        "scheduler": "beta",
+        "shift": 5.0,
+        "default_loras": ANIMA_DEFAULT_LORAS,
+    },
+}
 
 # ── FLUX.1 Kontext [dev] — instruction image editing ───────────────────────────
 # The loader filename is single-sourced from the ComfyUI-models registry (SSOT) so
@@ -84,6 +136,42 @@ DEFAULT_NEGATIVE = (
     "animal head, horse head, animal ears, animal face, fur on face, snout, muzzle, "
     "human-animal hybrid, anthropomorphic, extra head, two heads, mutated anatomy"
 )
+
+
+def _comfy_models_root() -> Path:
+    if _COMFY_DIR:
+        return Path(_COMFY_DIR) / "models"
+    return Path(__file__).resolve().parents[2] / "plugins" / "comfyui" / "ComfyUI" / "models"
+
+
+def get_available_anima_models() -> dict[str, dict]:
+    models_root = _comfy_models_root()
+    diffusion_dir = models_root / "diffusion_models"
+    clip_dir = models_root / "text_encoders"
+    vae_dir = models_root / "vae"
+    lora_dir = models_root / "loras"
+    out: dict[str, dict] = {}
+    for key, meta in ANIMA_MODEL_CATALOG.items():
+        unet_ok = (diffusion_dir / meta["file"]).exists()
+        clip_ok = (clip_dir / meta["clip"]).exists()
+        vae_ok = (vae_dir / meta["vae"]).exists()
+        lora_state = [
+            {
+                "name": name,
+                "strength": strength,
+                "exists": (lora_dir / name).exists(),
+            }
+            for name, strength in meta.get("default_loras", [])
+        ]
+        out[key] = {
+            **meta,
+            "downloaded": bool(unet_ok and clip_ok and vae_ok),
+            "unet_exists": unet_ok,
+            "clip_exists": clip_ok,
+            "vae_exists": vae_ok,
+            "loras": lora_state,
+        }
+    return out
 
 
 class ComfyUIImageGenerator:
@@ -117,11 +205,83 @@ class ComfyUIImageGenerator:
     # ── workflow ──────────────────────────────────────────────────────
     def _build_workflow(
         self, *, prompt: str, negative: str, lora_names: list[str],
+        lora_specs: list[tuple[str, float]] | None,
         width: int, height: int, seed: int, steps: int, cfg: float,
         model: str | None = None,
     ) -> dict:
         effective_model = model or self.model
         ml = (effective_model or "").lower()
+        if lora_specs is None:
+            lora_specs = [(name, self.lora_strength) for name in lora_names]
+
+        if effective_model in ANIMA_MODEL_CATALOG:
+            anima = ANIMA_MODEL_CATALOG[effective_model]
+            model_src = ["unet", 0]
+            wf: dict = {
+                "unet": {
+                    "class_type": "UNETLoader",
+                    "inputs": {"unet_name": anima["file"], "weight_dtype": "default"},
+                },
+                "clip": {
+                    "class_type": "CLIPLoader",
+                    "inputs": {"clip_name": anima["clip"], "type": "stable_diffusion", "device": "default"},
+                },
+                "vae_loader": {
+                    "class_type": "VAELoader",
+                    "inputs": {"vae_name": anima["vae"]},
+                },
+            }
+            for i, (name, strength) in enumerate(lora_specs):
+                nid = f"lora_{i}"
+                wf[nid] = {
+                    "class_type": "LoraLoaderModelOnly",
+                    "inputs": {
+                        "model": model_src,
+                        "lora_name": name,
+                        "strength_model": strength,
+                    },
+                }
+                model_src = [nid, 0]
+            wf["sampling"] = {
+                "class_type": "ModelSamplingAuraFlow",
+                "inputs": {"model": model_src, "shift": anima["shift"]},
+            }
+            wf["pos"] = {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": prompt, "clip": ["clip", 0]},
+            }
+            wf["neg"] = {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": negative, "clip": ["clip", 0]},
+            }
+            wf["latent"] = {
+                "class_type": "EmptySD3LatentImage",
+                "inputs": {"width": width, "height": height, "batch_size": 1},
+            }
+            wf["ksampler"] = {
+                "class_type": "KSampler",
+                "inputs": {
+                    "seed": seed,
+                    "steps": max(int(anima["steps"]), int(steps or anima["steps"])),
+                    "cfg": float(anima["cfg"]),
+                    "sampler_name": anima["sampler"],
+                    "scheduler": anima["scheduler"],
+                    "denoise": 1.0,
+                    "model": ["sampling", 0],
+                    "positive": ["pos", 0],
+                    "negative": ["neg", 0],
+                    "latent_image": ["latent", 0],
+                },
+            }
+            wf["vae"] = {
+                "class_type": "VAEDecode",
+                "inputs": {"samples": ["ksampler", 0], "vae": ["vae_loader", 0]},
+            }
+            wf["save"] = {
+                "class_type": "SaveImage",
+                "inputs": {"filename_prefix": effective_model, "images": ["vae", 0]},
+            }
+            return wf
 
         # ── Capability guard (subject-16 model-collapse fix) ──────────────────
         # Our trained character LoRAs are SDXL (the trainer is a
@@ -175,7 +335,7 @@ class ComfyUIImageGenerator:
                 nid = f"lora_{i}"
                 wf[nid] = {
                     "class_type": "LoraLoaderModelOnly",
-                    "inputs": {"model": model_src, "lora_name": name, "strength_model": self.lora_strength},
+                    "inputs": {"model": model_src, "lora_name": name, "strength_model": lora_specs[i][1]},
                 }
                 model_src = [nid, 0]
             wf["pos"] = {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["clip", 0]}}
@@ -284,8 +444,8 @@ class ComfyUIImageGenerator:
                 "class_type": "LoraLoader",
                 "inputs": {
                     "lora_name": name,
-                    "strength_model": self.lora_strength,
-                    "strength_clip": self.lora_strength,
+                    "strength_model": lora_specs[i][1],
+                    "strength_clip": lora_specs[i][1],
                     "model": model_src,
                     "clip": clip_src,
                 },
@@ -383,7 +543,7 @@ class ComfyUIImageGenerator:
                 pass
         try:
             base = _comfy_models_dir() if _comfy_models_dir else (
-                Path(__file__).resolve().parents[3] / "plugins" / "comfyui" / "ComfyUI" / "models"
+                _comfy_models_root()
             )
             f = base / "unet" / KONTEXT_UNET
             return f.exists() and f.stat().st_size > 0
@@ -483,7 +643,7 @@ class ComfyUIImageGenerator:
             # Comfy registers extra_model_paths; probe a likely loras/ subdir next to ComfyUI.
             # This is read-only best-effort; the actual LoraLoader inside Comfy will
             # resolve by basename anyway.
-            search_dirs.append(Path(__file__).resolve().parents[3] / "plugins" / "comfyui" / "ComfyUI" / "models" / "loras")
+            search_dirs.append(_comfy_models_root() / "loras")
         except Exception:
             pass
 
@@ -513,17 +673,23 @@ class ComfyUIImageGenerator:
             )
 
         effective_model = model or self.model
+        default_anima_specs = []
+        if effective_model in ANIMA_MODEL_CATALOG:
+            default_anima_specs = list(ANIMA_MODEL_CATALOG[effective_model].get("default_loras", []))
         # ComfyUI resolves LoRAs by basename within its loras search paths;
         # data/training/loras is registered via extra_model_paths.yaml.
-        lora_names = [os.path.basename(p) for p in (loras or []) if p]
+        external_lora_specs = [(os.path.basename(p), self.lora_strength) for p in (loras or []) if p]
+        lora_specs = default_anima_specs + external_lora_specs
+        lora_names = [name for name, _strength in lora_specs]
 
         # Run preflight (logs warnings for missing; does not raise).
-        self._preflight_loras(loras or [])
+        self._preflight_loras(lora_names)
 
         workflow = self._build_workflow(
             prompt=prompt,
             negative=negative_prompt or DEFAULT_NEGATIVE,
             lora_names=lora_names,
+            lora_specs=lora_specs,
             width=width, height=height, seed=seed, steps=steps, cfg=cfg,
             model=effective_model,
         )

@@ -395,6 +395,11 @@ class PluginManager:
         
         health_endpoint = metadata.endpoints.get('health', '/health')
         service_url = metadata.config.service_url
+        # Desktop mode runs ComfyUI natively on Windows while the backend stays
+        # in WSL.  The environment URL is the WSL-to-Windows gateway and must
+        # override the manifest's localhost URL (which means WSL itself).
+        if metadata.id == 'comfyui':
+            service_url = os.environ.get('GUAARDVARK_COMFYUI_URL', service_url)
         
         if not service_url:
             if metadata.port:
@@ -607,6 +612,14 @@ class PluginManager:
         if self._plugin_status.get(plugin_id) == PluginStatus.RUNNING:
             self._broadcast_plugins_status(f"start:{plugin_id}:already_running")
             return {'success': True, 'message': 'Plugin already running'}
+
+        # An externally managed native ComfyUI may be healthy even though this
+        # backend was restarted and has no in-memory plugin status yet.
+        if plugin_id == 'comfyui' and self._check_service_running(metadata):
+            self._plugin_status[plugin_id] = PluginStatus.RUNNING
+            self._save_running()
+            self._broadcast_plugins_status(f"start:{plugin_id}:external_running")
+            return {'success': True, 'message': 'External native ComfyUI is already running'}
 
         # Non-service plugins (e.g. lora_trainer — a TOOL the celery worker invokes
         # on demand) have NO long-running server to launch or health-check. "Starting"
@@ -997,6 +1010,8 @@ class PluginManager:
         if metadata.type == 'service':
             health_endpoint = metadata.endpoints.get('health', '/health')
             service_url = metadata.config.service_url
+            if plugin_id == 'comfyui':
+                service_url = os.environ.get('GUAARDVARK_COMFYUI_URL', service_url)
             
             if not service_url and metadata.port:
                 service_url = f"http://localhost:{metadata.port}"
@@ -1009,7 +1024,14 @@ class PluginManager:
                 response = requests.get(url, timeout=5)
                 
                 if response.status_code == 200:
-                    data = response.json()
+                    # ComfyUI's root health endpoint is valid HTTP but serves
+                    # its HTML UI rather than JSON.  A successful response is
+                    # still a healthy service; do not turn that into a false
+                    # plugin error in the management UI.
+                    try:
+                        data = response.json()
+                    except ValueError:
+                        data = {'status': 'healthy'}
                     data['plugin_id'] = plugin_id
                     return data
                 else:

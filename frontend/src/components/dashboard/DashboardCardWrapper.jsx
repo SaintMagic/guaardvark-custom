@@ -69,7 +69,7 @@ const DashboardCardWrapper = React.forwardRef(
 
     // Optimized color calculations - parse hex once and compute both properties
     const colorData = useMemo(() => {
-      if (!cardColor) {
+      if (!cardColor || typeof cardColor !== 'string') {
         return {
           isLight: false,
           oppositeColor: theme.palette.text.primary
@@ -247,7 +247,7 @@ const DashboardCardWrapper = React.forwardRef(
                 },
               },
             },
-            ...(cardColor && {
+            ...(cardColor && typeof cardColor === 'string' && {
               backgroundColor: cardColor,
               color: getOppositeColor, // Use opposite color for better contrast
             }),

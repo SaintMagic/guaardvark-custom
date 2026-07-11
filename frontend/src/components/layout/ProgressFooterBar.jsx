@@ -9,6 +9,7 @@ import { useAppStore } from '../../stores/useAppStore';
 
 // Friendly labels for process types
 const PROCESS_TYPE_LABELS = {
+    ltx_sequence: 'LTX Sequence',
     production: 'Production',
     lora_train: 'Training Subject',
     indexing: 'Indexing',
@@ -76,7 +77,7 @@ const ProgressFooterBar = () => {
 
             // Priority order for selecting which process to display
             const priorityOrder = [
-                'production', 'indexing', 'image_generation', 'csv_processing', 'file_generation',
+                'ltx_sequence', 'production', 'indexing', 'image_generation', 'csv_processing', 'file_generation',
                 'analysis', 'upload', 'llm_processing', 'web_scraping', 'outreach', 'backup',
                 'training', 'lora_train', 'task_processing', 'voice_processing', 'document_processing',
                 'wordpress_pull', 'wordpress_push', 'wordpress_processing', 'processing',

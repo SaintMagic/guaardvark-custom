@@ -1452,7 +1452,9 @@ def display_status():
         if not installed:
             missing_apt.append(apt_pkg)
 
-    # Browser — at least one of the choices must be present.
+    # Browser — useful for browser-driving tasks, but the virtual display can
+    # still function without one. Keep this informational so WSL installs
+    # without a snap-capable browser don't look broken.
     browser_found = None
     for apt_pkg, cmd in _DISPLAY_BROWSER_CHOICES:
         if shutil.which(cmd):
@@ -1467,9 +1469,8 @@ def display_status():
         "version": browser_found["version"] if browser_found else None,
         "command": browser_found["command"] if browser_found else None,
         "apt_package": browser_found["apt_package"] if browser_found else "firefox",
+        "required": False,
     }
-    if not browser_found:
-        missing_apt.append("firefox")  # Default install target
 
     # Python mss — what the screen backend uses to capture pixels.
     try:
@@ -1503,13 +1504,19 @@ def display_status():
         "display": ":99",
     }
 
-    all_ready = all(c.get("installed") for c in components.values() if c is not components["display_running"])
+    required_component_keys = [
+        *[cmd for _, cmd in _DISPLAY_SYSTEM_DEPS],
+        "mss",
+        "start_script",
+    ]
+    all_ready = all(components[key].get("installed") for key in required_component_keys)
     return jsonify({
         "success": True,
         "ready": all_ready,
         "display_running": components["display_running"]["installed"],
         "components": components,
         "missing_apt_packages": missing_apt,
+        "optional_missing_apt_packages": [] if browser_found else ["firefox"],
         "missing_pip_packages": [] if mss_installed else ["mss"],
     })
 
@@ -1535,10 +1542,6 @@ def install_display():
         for apt_pkg, cmd in _DISPLAY_SYSTEM_DEPS:
             if not shutil.which(cmd):
                 missing_apt.append(apt_pkg)
-
-        # Browser — pick one if none present. Default to firefox.
-        if not any(shutil.which(cmd) for _, cmd in _DISPLAY_BROWSER_CHOICES):
-            missing_apt.append("firefox")
 
         try:
             mss_missing = find_spec("mss") is None
@@ -1614,8 +1617,6 @@ def install_display():
 
         # Re-probe after install so the response reflects reality.
         still_missing = [pkg for pkg, cmd in _DISPLAY_SYSTEM_DEPS if not shutil.which(cmd)]
-        if not any(shutil.which(cmd) for _, cmd in _DISPLAY_BROWSER_CHOICES):
-            still_missing.append("(browser)")
         try:
             mss_ok = find_spec("mss") is not None
         except Exception:

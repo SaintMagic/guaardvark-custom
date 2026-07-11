@@ -101,6 +101,77 @@ MUSIC_VENV="$PLUGIN_ROOT/venv-music"
 ensure_venv "$PLUGIN_VENV"  "$PLUGIN_ROOT/requirements.txt"        "audio_foundry"
 ensure_venv "$MUSIC_VENV"   "$PLUGIN_ROOT/requirements-music.txt"  "audio_foundry-music"
 
+repair_torch_runtime_if_needed() {
+    local torch_version=""
+    local runtime_probe=""
+
+    # shellcheck disable=SC1091
+    source "$PLUGIN_VENV/bin/activate"
+    if python - <<'PY' >/dev/null 2>&1
+import torch
+if torch.cuda.is_available():
+    torch.zeros(1).cuda()
+else:
+    torch.zeros(1)
+PY
+    then
+        deactivate
+        return 0
+    fi
+
+    runtime_probe="$(python - <<'PY' 2>&1 || true
+import sys
+try:
+    import torch
+    if torch.cuda.is_available():
+        torch.zeros(1).cuda()
+    else:
+        torch.zeros(1)
+except Exception as e:
+    print(f"{type(e).__name__}: {e}")
+    sys.exit(1)
+PY
+)"
+    torch_version="$(python - <<'PY' 2>/dev/null || true
+import importlib.metadata as m
+try:
+    print(m.version("torch"))
+except Exception:
+    print("")
+PY
+)"
+    deactivate
+
+    echo "audio_foundry torch runtime probe failed: ${runtime_probe:-unknown error}"
+
+    # Verified local repair path for the copied audio_foundry venv on this box:
+    # torch 2.11.0+cu128 with an incomplete CUDA side-package set fails to import
+    # with missing libnvshmem_host.so.3 / related symbol errors. Repair just the
+    # CUDA aux packages to the versions torch declares instead of reinstalling the
+    # whole env.
+    if [ "$torch_version" = "2.11.0+cu128" ]; then
+        echo "Repairing torch 2.11.0+cu128 CUDA side-packages for audio_foundry..."
+        # shellcheck disable=SC1091
+        source "$PLUGIN_VENV/bin/activate"
+        pip install --upgrade --force-reinstall \
+            nvidia-nvshmem-cu12==3.4.5 \
+            nvidia-cudnn-cu12==9.19.0.56 \
+            nvidia-cusparselt-cu12==0.7.1 \
+            nvidia-nccl-cu12==2.28.9 \
+            nvidia-cuda-cupti-cu12==12.9.79 \
+            nvidia-cuda-nvrtc-cu12==12.9.86 \
+            nvidia-nvjitlink-cu12==12.9.86 \
+            nvidia-nvtx-cu12==12.9.79 \
+            triton==3.6.0 \
+            sympy==1.14.0 || { echo "Error: audio_foundry torch runtime repair failed"; exit 1; }
+        deactivate
+        return 0
+    fi
+
+    echo "Reinstalling torch stack for audio_foundry via shared installer..."
+    bash "$PROJECT_ROOT/scripts/install_pytorch.sh" --venv "$PLUGIN_VENV" || { echo "Error: shared torch reinstall failed"; exit 1; }
+}
+
 # audio_fx (Stable Audio Open) needs diffusers >= 0.30, but chatterbox-tts
 # pins diffusers == 0.29.0 in its setup.py. Listing both pins together in
 # requirements.txt makes pip's strict resolver fail with ResolutionImpossible.
@@ -122,6 +193,8 @@ if [ ! -f "$DIFFUSERS_UPGRADE_SENTINEL" ] || [ "$PLUGIN_ROOT/requirements.txt" -
     touch "$DIFFUSERS_UPGRADE_SENTINEL"
     deactivate
 fi
+
+repair_torch_runtime_if_needed
 
 # Torch wheels that chatterbox-tts (and sometimes kokoro) transitively pull are
 # often built for older GPUs only. On machines with brand-new Blackwell cards

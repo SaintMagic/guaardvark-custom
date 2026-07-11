@@ -47,7 +47,7 @@ class BatchPrompt:
     id: str
     prompt: str
     negative_prompt: str = ""
-    style: str = "realistic"
+    style: str = "neutral"
     width: int = 512
     height: int = 512
     steps: int = 20
@@ -189,8 +189,8 @@ class BatchImageGenerator:
                 prompt_id = row.get('id', '').strip() or f"prompt_{i+1}"
 
                 try:
-                    width = int(row.get('width', 512)) if row.get('width', '').strip() else 512
-                    height = int(row.get('height', 512)) if row.get('height', '').strip() else 512
+                    width = int(row.get('width', 1024)) if row.get('width', '').strip() else 1024
+                    height = int(row.get('height', 1024)) if row.get('height', '').strip() else 1024
                     steps = int(row.get('steps', 20)) if row.get('steps', '').strip() else 20
                     guidance = float(row.get('guidance', 7.5)) if row.get('guidance', '').strip() else 7.5
                     seed = int(row['seed']) if row.get('seed') and row['seed'].strip() else None
@@ -205,8 +205,8 @@ class BatchImageGenerator:
                         
                 except (ValueError, TypeError) as e:
                     logger.warning(f"Row {i+1} has invalid numeric values, using defaults: {e}")
-                    width = 512
-                    height = 512
+                    width = 1024
+                    height = 1024
                     steps = 20
                     guidance = 7.5
                     seed = None
@@ -215,7 +215,7 @@ class BatchImageGenerator:
                     id=prompt_id,
                     prompt=prompt_text,
                     negative_prompt=row.get('negative_prompt', '').strip() if row.get('negative_prompt') else '',
-                    style=row.get('style', 'realistic').strip() if row.get('style') else 'realistic',
+                    style=row.get('style', 'neutral').strip() if row.get('style') else 'neutral',
                     width=width,
                     height=height,
                     steps=steps,
@@ -346,6 +346,15 @@ class BatchImageGenerator:
             self.image_generator
             and hasattr(self.image_generator, "_device")
             and self.image_generator._device == "cuda"
+        )
+
+    def _batch_uses_comfy_models(self, request: BatchImageRequest) -> bool:
+        """Detect batches that route through the private Comfy backend."""
+        if not self.image_generator:
+            return False
+        return any(
+            getattr(self.image_generator, "_is_comfy_managed_model", lambda _m: False)(prompt.model)
+            for prompt in request.prompts
         )
 
     def _fail_batch_gpu_busy(
@@ -880,6 +889,7 @@ class BatchImageGenerator:
                     f"Batch {batch_id} acquiring gpu_session "
                     f"(vram~{vram_mb}MB ram~{ram_gb}GB)"
                 )
+                comfy_batch = self._batch_uses_comfy_models(request)
                 try:
                     with gpu_session(
                         JobKind.VIDEO_RENDER,
@@ -887,7 +897,7 @@ class BatchImageGenerator:
                         on_busy="wait",
                         wait_timeout=120.0,
                         evict_ollama=True,
-                        free_comfyui=False,
+                        free_comfyui=comfy_batch,
                         cross_process=True,
                         vram_estimate_mb=vram_mb,
                         ram_estimate_gb=ram_gb,

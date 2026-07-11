@@ -41,6 +41,7 @@ const TrainingPage = lazy(() => import("./pages/TrainingPage"));
 const ImagesPage = lazy(() => import("./pages/ImagesPage"));
 const AudioFoundryPage = lazy(() => import("./pages/AudioFoundryPage"));
 const VideoGeneratorPage = lazy(() => import("./pages/VideoGeneratorPage"));
+const LTXDirectorPage = lazy(() => import("./pages/LTXDirectorPage"));
 const VideoTextOverlayPage = lazy(() => import("./pages/VideoTextOverlayPage"));
 const VideoEditorPage = lazy(() => import("./pages/VideoEditorPage"));
 const BulkImportDocumentsPage = lazy(() => import("./pages/BulkImportDocumentsPage"));
@@ -331,6 +332,16 @@ const AppContainer = () => {
                           <AppLayout>
                             <ErrorBoundary>
                               <VideoGeneratorPage />
+                            </ErrorBoundary>
+                          </AppLayout>
+                        }
+                      />
+                      <Route
+                        path="/ltx-director"
+                        element={
+                          <AppLayout>
+                            <ErrorBoundary>
+                              <LTXDirectorPage />
                             </ErrorBoundary>
                           </AppLayout>
                         }

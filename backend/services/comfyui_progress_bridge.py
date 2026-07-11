@@ -117,7 +117,21 @@ class ComfyUIProgressBridge:
             daemon=True,
         )
         self._thread.start()
-        logger.info(f"ComfyUI ws progress bridge started for process {process_id}")
+        # Create a visible process immediately. ComfyUI can spend a long time
+        # loading models before it sends its first per-step progress message.
+        emit_progress_event(
+            process_id=process_id,
+            progress=0,
+            message="ComfyUI queued; waiting for node progress",
+            status="processing",
+            process_type="video_render",
+            additional_data={"stage": "queued", "node": "", **(extra or {})},
+        )
+        logger.info(
+            "ComfyUI ws progress bridge started for process %s (%s)",
+            process_id,
+            ws_url,
+        )
 
     def stop(self) -> None:
         self._stop.set()
@@ -139,7 +153,8 @@ class ComfyUIProgressBridge:
             logger.warning(f"ws progress bridge could not connect ({e}); falling back to poll-only")
             return
 
-        last_pct = -1
+        last_update = None
+        logger.info("ComfyUI ws progress bridge connected for process %s", process_id)
         try:
             while not self._stop.is_set() and time.time() < deadline:
                 try:
@@ -168,21 +183,36 @@ class ComfyUIProgressBridge:
                     # never by the bridge (avoids a premature "100%" race).
                     pct = int(value / total * 100) if total else 0
                     pct = max(1, min(99, pct))
-                    if pct != last_pct:
-                        last_pct = pct
+                    # Node transitions matter even when ComfyUI reports the
+                    # same percentage for adjacent nodes. Include the stage
+                    # and step in the de-duplication key so the launcher does
+                    # not appear frozen during model loading/encoding.
+                    update_key = (pct, node, int(value), int(total))
+                    if update_key != last_update:
+                        last_update = update_key
                         emit_progress_event(
                             process_id=process_id,
                             progress=pct,
-                            message=f"{stage} {value}/{total}",
+                            message=f"{stage} {value}/{total}" if total else stage,
                             status="processing",
                             process_type="video_render",
-                            additional_data={"stage": stage, "node": node, **extra},
+                            additional_data={
+                                "stage": stage,
+                                "node": node,
+                                "current": int(value),
+                                "total": int(total),
+                                **extra,
+                            },
+                        )
+                        logger.debug(
+                            "ComfyUI progress %s: %s %s/%s (%s%%)",
+                            process_id, stage, value, total, pct,
                         )
 
                 elif mtype == "executing":
                     # node == None means the prompt finished / queue went idle.
                     if data.get("node") is None:
-                        logger.debug(f"ws progress bridge: ComfyUI idle for {process_id}, stopping")
+                        logger.info("ComfyUI ws progress bridge: prompt idle for %s", process_id)
                         break
         finally:
             try:
@@ -191,3 +221,4 @@ class ComfyUIProgressBridge:
             except Exception:
                 pass
             self._ws = None
+            logger.info("ComfyUI ws progress bridge stopped for process %s", process_id)
