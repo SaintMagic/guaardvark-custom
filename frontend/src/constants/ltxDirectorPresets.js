@@ -1,4 +1,4 @@
-export const LTX_STORAGE_KEY = "guaardvark.ltx-director.v3";
+export const LTX_STORAGE_KEY = "guaardvark.ltx-director.v4";
 
 export const DEFAULT_LTX_CONFIG = {
   performance_profile: "custom",
@@ -34,7 +34,7 @@ export const DEFAULT_LTX_CONFIG = {
   distilled_lora: false,
   distilled_lora_name: "LTX/ltx-2.3-22b-distilled-lora-1.1_fro90_ceil72_condsafe.safetensors",
   distilled_lora_strength: 0.5,
-  bodyphysics_lora: true,
+  bodyphysics_lora: false,
   bodyphysics_lora_name: "LTX/DaSiWa_LTX23_NSFW_Bodyphysics_Fluid_Motion_Enhancer_v01.safetensors",
   bodyphysics_lora_strength: 0.5,
   loras: [],
@@ -171,7 +171,7 @@ export const LTX_WORKFLOW_PRESETS = {
       duration_seconds: 8,
       vram_headroom: 3,
       distilled_lora: false,
-      bodyphysics_lora: true,
+      bodyphysics_lora: false,
       pass1: { enabled: true, cfg: 1, steps: 10, scheduler: "linear_quadratic", denoise: 1 },
       pass2: { enabled: true, cfg: 1, steps: 4, scheduler: "linear_quadratic", denoise: 0.3 },
       pass3: { enabled: false },

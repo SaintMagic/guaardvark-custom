@@ -99,7 +99,7 @@ class LTXDirectorConfig:
     distilled_lora: bool = False
     distilled_lora_name: str = "LTX/ltx-2.3-22b-distilled-lora-1.1_fro90_ceil72_condsafe.safetensors"
     distilled_lora_strength: float = 0.5
-    bodyphysics_lora: bool = True
+    bodyphysics_lora: bool = False
     bodyphysics_lora_name: str = "LTX/DaSiWa_LTX23_NSFW_Bodyphysics_Fluid_Motion_Enhancer_v01.safetensors"
     bodyphysics_lora_strength: float = 0.5
     loras: List[Dict[str, Any]] = field(default_factory=list)

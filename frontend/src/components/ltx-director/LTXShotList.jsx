@@ -42,7 +42,7 @@ export default function LTXShotList({ globalConfig, onGlobalConfigChange }) {
   const add = () => setSequence((current) => ({ ...current, shots: [...current.shots, newShot(current.shots.length, { ...current.global, prompt: "" })] }));
   const duplicate = (shot) => setSequence((current) => ({ ...current, shots: [...current.shots, { ...shot, id: crypto.randomUUID(), order: current.shots.length, name: `${shot.name} copy`, status: "pending", output_path: null, final_frame_path: null, attempt_number: 0 }] }));
   const save = async (value = sequence, announce = true) => { setBusy(true); setError(""); try { const saved = value.project_id ? await updateSequence(value.project_id, value) : await createSequence(value); setSequence(saved); if (announce) setMessage("Sequence saved"); return saved; } catch (err) { setError(err.message); return null; } finally { setBusy(false); } };
-  const run = async (action) => { setBusy(true); setError(""); try { const current = sequence.project_id ? sequence : await save(sequence, false); if (!current?.project_id) return; const updated = await action(current.project_id); if (updated?.shots) setSequence(updated); setMessage("Request accepted"); } catch (err) { setError(err.message); } finally { setBusy(false); } };
+  const run = async (action) => { setBusy(true); setError(""); try { const current = await save(sequence, false); if (!current?.project_id) return; const updated = await action(current.project_id); if (updated?.shots) setSequence(updated); setMessage("Request accepted"); } catch (err) { setError(err.message); } finally { setBusy(false); } };
   const approve = async (shot) => {
     if (!sequence.project_id || !shot.keyframe_asset_path) return;
     setBusy(true); setError("");

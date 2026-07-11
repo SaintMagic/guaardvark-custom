@@ -22,13 +22,16 @@ logger = logging.getLogger(__name__)
 
 def _emit_progress(sequence_id: str, *, state: str, percent: float, label: str, completed_units: int, total_units: int) -> None:
     """Publish the normalized shape consumed by the existing global progress UI."""
+    normalized_state = {"completed": "complete", "failed": "error"}.get(state, state)
     payload = {
         "job_id": f"ltx-sequence:{sequence_id}", "job_type": "ltx_sequence",
-        "process_type": "ltx_sequence", "state": state, "status": state,
+        "process_type": "ltx_sequence", "state": normalized_state, "status": normalized_state,
         "progress": max(0.0, min(100.0, percent)), "percent": max(0.0, min(100.0, percent)),
         "message": label, "label": label, "completed_units": completed_units,
-        "total_units": total_units, "queued_count": max(0, total_units - completed_units),
-        "can_cancel": state in {"queued", "running", "postprocessing"},
+        "total_units": total_units, "generated_count": completed_units, "target_count": total_units,
+        "queued_count": max(0, total_units - completed_units),
+        "additional_data": {"generated_count": completed_units, "target_count": total_units, "completed_units": completed_units, "total_units": total_units},
+        "can_cancel": normalized_state in {"queued", "loading", "running", "postprocessing"},
     }
     try:
         from backend.socketio_instance import socketio
@@ -55,7 +58,7 @@ def new_sequence(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         "pass1": {"enabled": True, "cfg": 1.0, "steps": 10, "scheduler": "linear_quadratic", "denoise": 1.0},
         "pass2": {"enabled": True, "cfg": 1.0, "steps": 4, "scheduler": "linear_quadratic", "denoise": 0.3},
         "pass3": {"enabled": False, "cfg": 1.0, "steps": 2, "scheduler": "linear_quadratic", "denoise": 0.2},
-        "tiled_vae": True, "chunking": True,
+        "tiled_vae": True, "chunking": True, "bodyphysics_lora": False,
     }
     sequence = {
         "schema_version": 1, "project_id": project_id,
@@ -75,6 +78,32 @@ class LTXSequenceService:
         self._threads: Dict[str, threading.Thread] = {}
         self._cancel: Dict[str, threading.Event] = {}
         self._lock = threading.Lock()
+        self.recover_incomplete()
+
+    def recover_incomplete(self) -> int:
+        """Reconcile persisted sequence state after a backend restart."""
+        recovered = 0
+        for sequence in self.repository.list():
+            active = (sequence.get("jobs") or {}).get("active") or {}
+            if active.get("state") not in {"queued", "running", "postprocessing"}:
+                continue
+            changed = False
+            for shot in sequence.get("shots", []):
+                output = shot.get("output_path")
+                if shot.get("status") == "running" and output and Path(output).exists():
+                    shot.update({"status": "completed", "recovered_at": _now()})
+                    changed = True
+                elif shot.get("status") == "running":
+                    shot.update({"status": "interrupted", "error": "Backend restarted during render"})
+                    changed = True
+            sequence.setdefault("jobs", {})["active"] = {"state": "interrupted", "recovered_at": _now()}
+            if changed or active:
+                try:
+                    self.save(sequence)
+                    recovered += 1
+                except Exception:
+                    logger.exception("Failed recovering LTX sequence %s", sequence.get("project_id"))
+        return recovered
 
     def validate(self, sequence: Dict[str, Any]) -> Dict[str, Any]:
         if sequence.get("schema_version") != 1:
@@ -103,7 +132,7 @@ class LTXSequenceService:
         sequence["updated_at"] = _now()
         return self.repository.save(sequence)
 
-    def render_shot(self, sequence_id: str, shot_id: str, *, retry: bool = False) -> Dict[str, Any]:
+    def render_shot(self, sequence_id: str, shot_id: str, *, retry: bool = False, cancel_event: Optional[threading.Event] = None) -> Dict[str, Any]:
         sequence = self.repository.get(sequence_id)
         if not sequence:
             raise KeyError("Sequence not found")
@@ -127,7 +156,7 @@ class LTXSequenceService:
         shot.update({"status": "running", "attempt_number": attempt, "error": None, "resolved_config": copy.deepcopy(config.__dict__), "started_at": _now()})
         self.save(sequence)
         output_root = Path("data") / "ltx_sequences" / sequence_id / "shots"
-        result = get_ltx_director_service().generate(config.__dict__, output_dir=output_root, batch_id=f"ltx-sequence-{sequence_id}-{shot_id}-{attempt}")
+        result = get_ltx_director_service().generate(config.__dict__, output_dir=output_root, batch_id=f"ltx-sequence-{sequence_id}-{shot_id}-{attempt}", cancel_event=cancel_event)
         if result.success:
             shot.update({"status": "completed", "output_path": result.video_path, "finished_at": _now(), "metadata": result.metadata})
             if result.video_path:
@@ -175,9 +204,24 @@ class LTXSequenceService:
         raw_loras = shot.get("image_loras") or global_config.get("image_loras") or []
         loras = [item if isinstance(item, str) else (item.get("path") or item.get("name")) for item in raw_loras]
         loras = [item for item in loras if item]
+        cast_id = shot.get("cast_subject_id") or global_config.get("cast_subject_id")
+        cast_trigger = ""
+        if cast_id:
+            try:
+                from backend.models import Subject, db
+                subject = db.session.get(Subject, int(cast_id))
+                if subject:
+                    if subject.lora_path:
+                        loras.append(subject.lora_path)
+                    cast_trigger = (subject.trigger_word or subject.name or "").strip()
+            except Exception as exc:
+                logger.warning("LTX Cast resolution failed for subject %s: %s", cast_id, exc)
+        prompt = shot.get("prompt", "")
+        if cast_trigger and cast_trigger.lower() not in prompt.lower():
+            prompt = f"{cast_trigger}, {prompt}"
         generator = ComfyUIImageGenerator()
-        generator.generate_image(prompt=shot.get("prompt", ""), negative_prompt=shot.get("negative_prompt_override") or global_config.get("negative_prompt", ""), output_path=str(path), width=int(defaults.get("width", 576)), height=int(defaults.get("height", 896)), seed=seed, steps=int(defaults.get("steps", 8)), model=model, loras=loras)
-        metadata = {"sequence_id": sequence_id, "shot_id": shot_id, "image_model": model, "cast_subject_id": shot.get("cast_subject_id") or global_config.get("cast_subject_id"), "image_loras": loras, "seed": seed, "prompt": shot.get("prompt", ""), "source_references": {"source_image": shot.get("source_image")}, "generated_at": _now()}
+        generator.generate_image(prompt=prompt, negative_prompt=shot.get("negative_prompt_override") or global_config.get("negative_prompt", ""), output_path=str(path), width=int(defaults.get("width", 576)), height=int(defaults.get("height", 896)), seed=seed, steps=int(defaults.get("steps", 8)), model=model, loras=loras)
+        metadata = {"sequence_id": sequence_id, "shot_id": shot_id, "image_model": model, "cast_subject_id": cast_id, "cast_trigger": cast_trigger, "image_loras": loras, "seed": seed, "prompt": prompt, "source_references": {"source_image": shot.get("source_image")}, "generated_at": _now()}
         path.with_suffix(".json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         shot.update({"keyframe_source": "generated", "keyframe_asset_path": str(path), "keyframe_status": "unapproved", "keyframe_attempt": attempt, "keyframe_metadata": metadata})
         return self.save(sequence)
@@ -186,6 +230,8 @@ class LTXSequenceService:
         sequence = self.repository.get(sequence_id)
         if not sequence:
             raise KeyError("Sequence not found")
+        if sequence.get("render_mode") == "timeline":
+            raise ValueError("Timeline mode is experimental and disabled until the native LTX Director API payload is validated")
         with self._lock:
             if sequence_id in self._threads and self._threads[sequence_id].is_alive():
                 raise RuntimeError("Sequence is already rendering")
@@ -204,6 +250,10 @@ class LTXSequenceService:
             sequence = self.repository.get(sequence_id) or {}
             shots = [shot for shot in sequence.get("shots", []) if shot.get("enabled", True)]
             total_units = len(shots)
+            fps = int((sequence.get("global") or {}).get("fps", 24))
+            weights = {shot["id"]: max(8, ((round(float(shot.get("duration_seconds", 1.0)) * fps) + 7) // 8) * 8) for shot in shots}
+            total_weight = max(1, sum(weights.values()))
+            completed_weight = 0
             completed_units = 0
             if sequence.get("render_mode") == "timeline":
                 self._render_timeline(sequence, sequence_id, cancel)
@@ -212,15 +262,22 @@ class LTXSequenceService:
                 if cancel.is_set():
                     break
                 if not shot.get("enabled", True) or shot.get("status") == "completed":
+                    completed_weight += weights[shot["id"]]
                     completed_units += 1
                     continue
-                _emit_progress(sequence_id, state="running", percent=(completed_units / max(1, total_units)) * 95, label=f"Rendering LTX shot {completed_units + 1} of {total_units}", completed_units=completed_units, total_units=total_units)
-                sequence = self.render_shot(sequence_id, shot["id"])
-                completed_units += 1
-                _emit_progress(sequence_id, state="running", percent=(completed_units / max(1, total_units)) * 95, label=f"Completed LTX shot {completed_units} of {total_units}", completed_units=completed_units, total_units=total_units)
+                _emit_progress(sequence_id, state="running", percent=(completed_weight / total_weight) * 95, label=f"Rendering LTX shot {completed_units + 1} of {total_units}", completed_units=completed_units, total_units=total_units)
+                sequence = self.render_shot(sequence_id, shot["id"], cancel_event=cancel)
+                current = next((item for item in sequence.get("shots", []) if item.get("id") == shot["id"]), shot)
+                if current.get("status") == "completed":
+                    completed_weight += weights[shot["id"]]
+                    completed_units += 1
+                _emit_progress(sequence_id, state="running", percent=(completed_weight / total_weight) * 95, label=f"Completed LTX shot {completed_units} of {total_units}", completed_units=completed_units, total_units=total_units)
             sequence = self.repository.get(sequence_id) or sequence
-            _emit_progress(sequence_id, state="completed" if not cancel.is_set() else "cancelled", percent=100 if not cancel.is_set() else (completed_units / max(1, total_units)) * 95, label="LTX sequence complete" if not cancel.is_set() else "LTX sequence cancelled", completed_units=completed_units, total_units=total_units)
-            sequence.setdefault("jobs", {})["active"] = {"state": "cancelled" if cancel.is_set() else "completed", "finished_at": _now()}
+            failed = [shot for shot in sequence.get("shots", []) if shot.get("enabled", True) and shot.get("status") in {"error", "blocked"}]
+            final_state = "cancelled" if cancel.is_set() else ("error" if failed else "completed")
+            final_label = "LTX sequence cancelled" if cancel.is_set() else (f"LTX sequence stopped: {len(failed)} shot(s) failed or blocked" if failed else "LTX sequence complete")
+            _emit_progress(sequence_id, state=final_state, percent=100 if final_state == "completed" else (completed_weight / total_weight) * 95, label=final_label, completed_units=completed_units, total_units=total_units)
+            sequence.setdefault("jobs", {})["active"] = {"state": final_state, "finished_at": _now(), "completed_units": completed_units, "total_units": total_units, "failed_shots": [shot.get("id") for shot in failed]}
             self.save(sequence)
         except Exception as exc:
             logger.exception("LTX sequence %s failed", sequence_id)

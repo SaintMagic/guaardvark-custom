@@ -46,6 +46,7 @@ class LTXSequenceFoundationTests(unittest.TestCase):
         })
         self.assertEqual(config.model_format, "safetensors")
         self.assertTrue(config.model_name.endswith("ltx23_fp8.safetensors"))
+        self.assertFalse(config.bodyphysics_lora)
 
     def test_timeline_compiler_emits_motion_and_audio_segments(self):
         document = sequence({"global": {"fps": 24}, "shots": [

@@ -481,7 +481,8 @@ export const UnifiedProgressProvider = ({ children }) => {
   // Handle job progress updates with atomic state management
   const handleJobProgress = useCallback(
     (data) => {
-      const { job_id, progress, message, status, process_type, generated_count, target_count, ...remainingData } = data;
+      const { job_id, progress, message, status: rawStatus, process_type, generated_count, target_count, ...remainingData } = data;
+      const status = ({ completed: "complete", failed: "error" })[rawStatus] || rawStatus;
 
       // Enhanced logging for debugging progress updates
       // if (status === "start" || status === "complete" || status === "error" || progress % 25 === 0) {

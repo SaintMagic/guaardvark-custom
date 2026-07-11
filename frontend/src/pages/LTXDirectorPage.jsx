@@ -59,7 +59,7 @@ const readSaved = () => {
     const merged = parsed && typeof parsed === "object" ? mergeLtxConfig(DEFAULT_LTX_CONFIG, parsed) : DEFAULT_LTX_CONFIG;
     // Migrate stale saved configs until the native Windows Sage runtime is
     // explicitly validated; never restore the crashing experimental mode.
-    return { ...merged, sage_attention: "off" };
+    return { ...merged, mode: merged.mode === "flf2v" ? "i2v" : merged.mode, bodyphysics_lora: false, sage_attention: "off" };
   } catch {
     return DEFAULT_LTX_CONFIG;
   }
@@ -240,10 +240,11 @@ export default function LTXDirectorPage() {
           <Grid container spacing={2}>
             <Grid item xs={12} sm={4}>
               <SelectField label="Generation mode" value={config.mode} onChange={(value) => set("mode", value)}>
-                {Object.entries(MODE_HELP).map(([value, label]) => <MenuItem key={value} value={value}>{value.toUpperCase()} — {label}</MenuItem>)}
+                {Object.entries(MODE_HELP).map(([value, label]) => <MenuItem key={value} value={value} disabled={value === "flf2v"}>{value.toUpperCase()} — {value === "flf2v" ? `${label} (API validation pending)` : label}</MenuItem>)}
               </SelectField>
             </Grid>
             <Grid item xs={12} sm={8}><Typography variant="body2" color="text.secondary">{MODE_HELP[config.mode]}</Typography></Grid>
+            {config.mode === "flf2v" ? <Grid item xs={12}><Alert severity="info">FLF2V is intentionally held out of the selectable modes until a native ComfyUI /prompt capture proves the first/last-frame Director schema.</Alert></Grid> : null}
             {config.mode === "i2v" || config.mode === "flf2v" ? <Grid item xs={12} sm={6}><LTXFileField label="Upload first/source image" kind="image" accept="image/*" value={config.source_image} onChange={(value) => set("source_image", value)} /></Grid> : null}
             {config.mode === "flf2v" ? <Grid item xs={12} sm={6}><LTXFileField label="Upload last frame" kind="image" accept="image/*" value={config.last_frame} onChange={(value) => set("last_frame", value)} /></Grid> : null}
             {config.mode === "v2v" ? <Grid item xs={12}><LTXFileField label="Upload source video" kind="video" accept="video/*" value={config.source_video} onChange={(value) => set("source_video", value)} /></Grid> : null}
@@ -387,6 +388,7 @@ export default function LTXDirectorPage() {
                   control={<Switch checked={config.bodyphysics_lora} disabled={!optional.DaSiWa_LTX2LoraLoader} onChange={(event) => set("bodyphysics_lora", event.target.checked)} />}
                   label="DaSiWa Bodyphysics enhancer"
                 />
+                {config.bodyphysics_lora ? <Alert severity="warning" sx={{ mt: 1 }}>Explicit fluid-motion/NSFW enhancer; it can distort ordinary acting and clothing.</Alert> : null}
               </Grid>
               <Grid item xs={12} md={6}>
                 <SelectField
