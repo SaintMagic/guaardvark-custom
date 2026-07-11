@@ -30,6 +30,7 @@ class LTXSequenceRepository:
     def create(self, document: Dict[str, Any]) -> Dict[str, Any]:
         sequence = copy.deepcopy(document)
         sequence.setdefault("project_id", str(uuid.uuid4()))
+        sequence["revision"] = 1
         self.save(sequence)
         return sequence
 
@@ -38,6 +39,13 @@ class LTXSequenceRepository:
         sequence["schema_version"] = SCHEMA_VERSION
         sequence_id = str(sequence["project_id"])
         target = self._path(sequence_id)
+        if target.exists():
+            try:
+                with target.open("r", encoding="utf-8") as handle:
+                    previous = json.load(handle)
+                sequence["revision"] = max(int(previous.get("revision", 0)) + 1, int(sequence.get("revision", 0) or 0))
+            except (OSError, ValueError, TypeError):
+                sequence["revision"] = int(sequence.get("revision", 0) or 0) + 1
         fd, tmp_name = tempfile.mkstemp(prefix=f".{sequence_id}.", suffix=".tmp", dir=str(self.root))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:

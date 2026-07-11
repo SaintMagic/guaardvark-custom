@@ -77,6 +77,9 @@ class LTXSequenceService:
         self.repository = repository or LTXSequenceRepository()
         self._threads: Dict[str, threading.Thread] = {}
         self._cancel: Dict[str, threading.Event] = {}
+        self._shot_threads: Dict[str, threading.Thread] = {}
+        self._shot_cancel: Dict[str, threading.Event] = {}
+        self._keyframe_threads: Dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
         self.recover_incomplete()
 
@@ -156,7 +159,15 @@ class LTXSequenceService:
         shot.update({"status": "running", "attempt_number": attempt, "error": None, "resolved_config": copy.deepcopy(config.__dict__), "started_at": _now()})
         self.save(sequence)
         output_root = Path("data") / "ltx_sequences" / sequence_id / "shots"
-        result = get_ltx_director_service().generate(config.__dict__, output_dir=output_root, batch_id=f"ltx-sequence-{sequence_id}-{shot_id}-{attempt}", cancel_event=cancel_event)
+        batch_id = f"ltx-sequence-{sequence_id}-{shot_id}-{attempt}"
+        from backend.services.gpu_resource_policy import gpu_session
+        from backend.services.job_types import JobKind
+        from backend.services.video_model_registry import vram_mb_for_model
+        with gpu_session(JobKind.VIDEO_RENDER, batch_id, on_busy="wait", wait_timeout=120.0,
+                         evict_ollama=True, free_comfyui=True, cross_process=True,
+                         vram_estimate_mb=vram_mb_for_model(config.model_id),
+                         require_fit=True, slot_id=f"ltx_sequence:{sequence_id}", lease_seconds=3600):
+            result = get_ltx_director_service().generate(config.__dict__, output_dir=output_root, batch_id=batch_id, cancel_event=cancel_event)
         if result.success:
             shot.update({"status": "completed", "output_path": result.video_path, "finished_at": _now(), "metadata": result.metadata})
             if result.video_path:
@@ -168,6 +179,50 @@ class LTXSequenceService:
         sequence = self.save(sequence)
         logger.info("LTX shot %s/%s finished with status %s", sequence_id, shot_id, shot["status"])
         return sequence
+
+    def queue_shot(self, sequence_id: str, shot_id: str, *, retry: bool = False) -> Dict[str, Any]:
+        sequence = self.repository.get(sequence_id)
+        if not sequence:
+            raise KeyError("Sequence not found")
+        self.validate(sequence)
+        key = f"{sequence_id}:{shot_id}"
+        with self._lock:
+            if self._shot_threads.get(key) and self._shot_threads[key].is_alive():
+                raise RuntimeError("Shot is already rendering")
+            event = threading.Event()
+            self._shot_cancel[key] = event
+            sequence.setdefault("jobs", {}).setdefault("shots", {})[shot_id] = {"state": "queued", "retry": retry, "queued_at": _now()}
+            sequence = self.save(sequence)
+            thread = threading.Thread(target=self._shot_worker, args=(sequence_id, shot_id, retry, event), daemon=True)
+            self._shot_threads[key] = thread
+            thread.start()
+        return sequence
+
+    def _shot_worker(self, sequence_id: str, shot_id: str, retry: bool, cancel_event: threading.Event) -> None:
+        key = f"{sequence_id}:{shot_id}"
+        try:
+            sequence = self.repository.get(sequence_id) or {}
+            sequence.setdefault("jobs", {}).setdefault("shots", {})[shot_id] = {"state": "running", "started_at": _now(), "retry": retry}
+            self.save(sequence)
+            sequence = self.render_shot(sequence_id, shot_id, retry=retry, cancel_event=cancel_event)
+            state = "cancelled" if cancel_event.is_set() else ("complete" if next((s for s in sequence.get("shots", []) if s.get("id") == shot_id), {}).get("status") == "completed" else "error")
+            sequence.setdefault("jobs", {}).setdefault("shots", {})[shot_id] = {"state": state, "finished_at": _now()}
+            self.save(sequence)
+        except Exception as exc:
+            logger.exception("LTX shot job %s/%s failed", sequence_id, shot_id)
+            sequence = self.repository.get(sequence_id)
+            if sequence:
+                sequence.setdefault("jobs", {}).setdefault("shots", {})[shot_id] = {"state": "error", "finished_at": _now(), "error": str(exc)}
+                self.save(sequence)
+        finally:
+            self._shot_cancel.pop(key, None)
+
+    def cancel_shot(self, sequence_id: str, shot_id: str) -> bool:
+        event = self._shot_cancel.get(f"{sequence_id}:{shot_id}")
+        if not event:
+            return False
+        event.set()
+        return True
 
     def approve_keyframe(self, sequence_id: str, shot_id: str, asset_path: str) -> Dict[str, Any]:
         sequence = self.repository.get(sequence_id)
@@ -220,11 +275,47 @@ class LTXSequenceService:
         if cast_trigger and cast_trigger.lower() not in prompt.lower():
             prompt = f"{cast_trigger}, {prompt}"
         generator = ComfyUIImageGenerator()
-        generator.generate_image(prompt=prompt, negative_prompt=shot.get("negative_prompt_override") or global_config.get("negative_prompt", ""), output_path=str(path), width=int(defaults.get("width", 576)), height=int(defaults.get("height", 896)), seed=seed, steps=int(defaults.get("steps", 8)), model=model, loras=loras)
+        from backend.services.gpu_resource_policy import gpu_session
+        from backend.services.job_types import JobKind
+        with gpu_session(JobKind.VIDEO_GEN, f"ltx-keyframe-{sequence_id}-{shot_id}-{attempt}", on_busy="wait", wait_timeout=120.0, evict_ollama=True, free_comfyui=True, cross_process=True, slot_id=f"ltx_keyframe:{sequence_id}", lease_seconds=1800):
+            generator.generate_image(prompt=prompt, negative_prompt=shot.get("negative_prompt_override") or global_config.get("negative_prompt", ""), output_path=str(path), width=int(defaults.get("width", 576)), height=int(defaults.get("height", 896)), seed=seed, steps=int(defaults.get("steps", 8)), model=model, loras=loras)
         metadata = {"sequence_id": sequence_id, "shot_id": shot_id, "image_model": model, "cast_subject_id": cast_id, "cast_trigger": cast_trigger, "image_loras": loras, "seed": seed, "prompt": prompt, "source_references": {"source_image": shot.get("source_image")}, "generated_at": _now()}
         path.with_suffix(".json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         shot.update({"keyframe_source": "generated", "keyframe_asset_path": str(path), "keyframe_status": "unapproved", "keyframe_attempt": attempt, "keyframe_metadata": metadata})
         return self.save(sequence)
+
+    def queue_keyframe(self, sequence_id: str, shot_id: str, *, regenerate: bool = False) -> Dict[str, Any]:
+        sequence = self.repository.get(sequence_id)
+        if not sequence:
+            raise KeyError("Sequence not found")
+        key = f"{sequence_id}:{shot_id}"
+        with self._lock:
+            if self._keyframe_threads.get(key) and self._keyframe_threads[key].is_alive():
+                raise RuntimeError("Keyframe is already generating")
+            sequence.setdefault("jobs", {}).setdefault("keyframes", {})[shot_id] = {"state": "queued", "queued_at": _now(), "regenerate": regenerate}
+            sequence = self.save(sequence)
+            thread = threading.Thread(target=self._keyframe_worker, args=(sequence_id, shot_id, regenerate), daemon=True)
+            self._keyframe_threads[key] = thread
+            thread.start()
+        return sequence
+
+    def _keyframe_worker(self, sequence_id: str, shot_id: str, regenerate: bool) -> None:
+        key = f"{sequence_id}:{shot_id}"
+        try:
+            sequence = self.repository.get(sequence_id) or {}
+            sequence.setdefault("jobs", {}).setdefault("keyframes", {})[shot_id] = {"state": "running", "started_at": _now(), "regenerate": regenerate}
+            self.save(sequence)
+            sequence = self.generate_keyframe(sequence_id, shot_id, regenerate=regenerate)
+            sequence.setdefault("jobs", {}).setdefault("keyframes", {})[shot_id] = {"state": "complete", "finished_at": _now()}
+            self.save(sequence)
+        except Exception as exc:
+            logger.exception("LTX keyframe job %s/%s failed", sequence_id, shot_id)
+            sequence = self.repository.get(sequence_id)
+            if sequence:
+                sequence.setdefault("jobs", {}).setdefault("keyframes", {})[shot_id] = {"state": "error", "finished_at": _now(), "error": str(exc)}
+                self.save(sequence)
+        finally:
+            self._keyframe_threads.pop(key, None)
 
     def render_all(self, sequence_id: str) -> Dict[str, Any]:
         sequence = self.repository.get(sequence_id)
@@ -237,10 +328,11 @@ class LTXSequenceService:
                 raise RuntimeError("Sequence is already rendering")
             cancel = threading.Event()
             self._cancel[sequence_id] = cancel
+            sequence.setdefault("jobs", {})["active"] = {"state": "queued", "started_at": _now()}
+            sequence = self.save(sequence)
             thread = threading.Thread(target=self._render_all_worker, args=(sequence_id, cancel), daemon=True)
             self._threads[sequence_id] = thread
             thread.start()
-        sequence["jobs"]["active"] = {"state": "queued", "started_at": _now()}
         _emit_progress(sequence_id, state="queued", percent=0, label="Queued LTX sequence", completed_units=0, total_units=len(sequence.get("shots", [])))
         return self.save(sequence)
 
@@ -349,9 +441,11 @@ class LTXSequenceService:
             if timeline_path:
                 sequence.setdefault("stitch", {})["output_path"] = timeline_path
                 return self.save(sequence)
-        paths = [shot.get("output_path") for shot in sequence.get("shots", []) if shot.get("enabled", True) and shot.get("status") == "completed" and shot.get("output_path")]
-        if not paths:
-            raise ValueError("No completed shots are available to stitch")
+        enabled = [shot for shot in sequence.get("shots", []) if shot.get("enabled", True)]
+        incomplete = [shot.get("id") for shot in enabled if shot.get("status") != "completed" or not shot.get("output_path") or not Path(shot.get("output_path")).is_file()]
+        if incomplete:
+            raise ValueError(f"Cannot stitch incomplete sequence; missing shots: {', '.join(incomplete)}")
+        paths = [shot["output_path"] for shot in enabled]
         output = Path("data") / "ltx_sequences" / sequence_id / "sequence" / "final.mp4"
         stitch_hard_cuts(paths, output, audio_policy=(sequence.get("stitch") or {}).get("audio_policy", "preserve_shot_audio"))
         sequence.setdefault("stitch", {})["output_path"] = str(output)

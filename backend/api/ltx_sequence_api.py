@@ -50,6 +50,9 @@ def update_sequence(sequence_id: str):
     if not current:
         return error_response("Sequence not found", 404)
     updated = copy.deepcopy(current)
+    requested_revision = _body().get("revision")
+    if requested_revision is not None and int(requested_revision) != int(current.get("revision", 1)):
+        return error_response("Sequence revision conflict; refresh before saving", 409)
     updated.update(_body())
     updated["project_id"] = sequence_id
     try:
@@ -87,7 +90,7 @@ def stitch_sequence(sequence_id: str):
 @ltx_sequence_bp.route("/<sequence_id>/shots/<shot_id>/render", methods=["POST"])
 def render_shot(sequence_id: str, shot_id: str):
     try:
-        return success_response(get_ltx_sequence_service().render_shot(sequence_id, shot_id))
+        return success_response(get_ltx_sequence_service().queue_shot(sequence_id, shot_id))
     except (KeyError, ValueError, RuntimeError) as exc:
         return error_response(str(exc), 400)
 
@@ -95,7 +98,7 @@ def render_shot(sequence_id: str, shot_id: str):
 @ltx_sequence_bp.route("/<sequence_id>/shots/<shot_id>/retry", methods=["POST"])
 def retry_shot(sequence_id: str, shot_id: str):
     try:
-        return success_response(get_ltx_sequence_service().render_shot(sequence_id, shot_id, retry=True))
+        return success_response(get_ltx_sequence_service().queue_shot(sequence_id, shot_id, retry=True))
     except (KeyError, ValueError, RuntimeError) as exc:
         return error_response(str(exc), 400)
 
@@ -114,14 +117,14 @@ def approve_keyframe(sequence_id: str, shot_id: str):
 @ltx_sequence_bp.route("/<sequence_id>/shots/<shot_id>/keyframe/generate", methods=["POST"])
 def generate_keyframe(sequence_id: str, shot_id: str):
     try:
-        return success_response(get_ltx_sequence_service().generate_keyframe(sequence_id, shot_id, regenerate=bool(_body().get("regenerate"))))
+        return success_response(get_ltx_sequence_service().queue_keyframe(sequence_id, shot_id, regenerate=bool(_body().get("regenerate"))))
     except (KeyError, ValueError, RuntimeError) as exc:
         return error_response(str(exc), 400)
 
 
 @ltx_sequence_bp.route("/<sequence_id>/shots/<shot_id>/cancel", methods=["POST"])
 def cancel_shot(sequence_id: str, shot_id: str):
-    return success_response({"cancelled": get_ltx_sequence_service().cancel(sequence_id), "shot_id": shot_id})
+    return success_response({"cancelled": get_ltx_sequence_service().cancel_shot(sequence_id, shot_id), "shot_id": shot_id})
 
 
 @ltx_sequence_bp.route("/<sequence_id>/manifest", methods=["GET"])
