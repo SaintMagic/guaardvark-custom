@@ -24,6 +24,7 @@ export const DEFAULT_LTX_CONFIG = {
   height: 896,
   fps: 24,
   duration_seconds: 8,
+  aspect_ratio: "9:16",
   seed: 42,
   resize_method: "maintain aspect ratio",
   guide_strength: 1,
@@ -101,10 +102,19 @@ export const MODE_HELP = {
   v2v: "Transform a source video; source audio can be retained.",
 };
 
+export const LTX_ASPECT_PRESETS = {
+  "16:9": { label: "16:9 · 1024×576", width: 1024, height: 576 },
+  "9:16": { label: "9:16 · 576×1024", width: 576, height: 1024 },
+  "1:1": { label: "1:1 · 768×768", width: 768, height: 768 },
+  "4:3": { label: "4:3 · 768×576", width: 768, height: 576 },
+  "3:4": { label: "3:4 · 576×768", width: 576, height: 768 },
+  custom: { label: "Custom", width: null, height: null },
+};
+
 export const QUALITY_PRESETS = {
   preview: {
     label: "Preview",
-    patch: { width: 512, height: 896, duration_seconds: 4, pass2: { enabled: false }, pass3: { enabled: false }, tiled_vae: true },
+    patch: { width: 512, height: 896, aspect_ratio: "custom", duration_seconds: 4, pass2: { enabled: false }, pass3: { enabled: false }, tiled_vae: true },
   },
   balanced: {
     label: "Balanced",

@@ -88,6 +88,7 @@ class LTXDirectorConfig:
     height: int = 896
     fps: int = 24
     duration_seconds: float = 8.0
+    aspect_ratio: str = "9:16"
     seed: int = 42
     resize_method: str = "maintain aspect ratio"
     guide_strength: float = 1.0
@@ -186,6 +187,8 @@ class LTXDirectorConfig:
             errors.append("width and height must be at least 256 and divisible by 8")
         if not 1 <= self.fps <= 60:
             errors.append("fps must be between 1 and 60")
+        if self.aspect_ratio not in {"16:9", "9:16", "1:1", "4:3", "3:4", "custom"}:
+            errors.append("aspect_ratio must be a supported preset or custom")
         if not 0.5 <= self.duration_seconds <= 120:
             errors.append("duration_seconds must be between 0.5 and 120")
         if self.output_format not in SUPPORTED_FORMATS:

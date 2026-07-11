@@ -19,7 +19,7 @@ import LTXShotList from "../components/ltx-director/LTXShotList";
 import useBatchVideo from "../hooks/useBatchVideo";
 import useJobsGate from "../hooks/useJobsGate";
 import {
-  DEFAULT_LTX_CONFIG, LTX_MODEL_OPTIONS, LTX_STORAGE_KEY, LTX_WORKFLOW_PRESETS, MODE_HELP, QUALITY_PRESETS, mergeLtxConfig,
+  DEFAULT_LTX_CONFIG, LTX_ASPECT_PRESETS, LTX_MODEL_OPTIONS, LTX_STORAGE_KEY, LTX_WORKFLOW_PRESETS, MODE_HELP, QUALITY_PRESETS, mergeLtxConfig,
 } from "../constants/ltxDirectorPresets";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
@@ -118,6 +118,7 @@ export default function LTXDirectorPage() {
   const set = useCallback((key, value) => setConfig((current) => ({
     ...current,
     [key]: value,
+    ...(key === "width" || key === "height" ? { aspect_ratio: "custom" } : {}),
     ...(key !== "performance_profile" && key !== "profile_id" ? { performance_profile: "custom" } : {}),
   })), []);
   const setNested = useCallback((key, patch) => setConfig((current) => ({
@@ -162,6 +163,15 @@ export default function LTXDirectorPage() {
 
   const applyPreset = (preset) => setConfig((current) => ({ ...mergeLtxConfig(current, QUALITY_PRESETS[preset].patch), performance_profile: "custom" }));
   const applyWorkflowPreset = (preset) => setConfig((current) => mergeLtxConfig(current, LTX_WORKFLOW_PRESETS[preset].patch));
+  const applyAspectRatio = (aspectRatio) => {
+    const preset = LTX_ASPECT_PRESETS[aspectRatio];
+    setConfig((current) => ({
+      ...current,
+      aspect_ratio: aspectRatio,
+      ...(preset?.width ? { width: preset.width, height: preset.height } : {}),
+      performance_profile: "custom",
+    }));
+  };
 
   const installModel = async () => {
     setError("");
@@ -323,6 +333,9 @@ export default function LTXDirectorPage() {
         <LTXSection title="Resolution, FPS and duration" badge={`${config.width}×${config.height} · ${totalFrames} frames`}>
           <Stack direction="row" spacing={1} sx={{ mb: 2 }}>{Object.entries(QUALITY_PRESETS).map(([key, preset]) => <Button key={key} size="small" variant="outlined" onClick={() => applyPreset(key)}>{preset.label}</Button>)}</Stack>
           <Grid container spacing={2}>
+            <Grid item xs={12} sm={4}><SelectField label="Image aspect ratio" value={config.aspect_ratio || "custom"} onChange={applyAspectRatio} helperText="Presets change dimensions; Custom keeps manual width/height.">
+              {Object.entries(LTX_ASPECT_PRESETS).map(([value, preset]) => <MenuItem key={value} value={value}>{preset.label}</MenuItem>)}
+            </SelectField></Grid>
             <Grid item xs={6} sm={2}><NumberField label="Width" value={config.width} min={256} max={4096} step={8} onChange={(value) => set("width", value)} /></Grid>
             <Grid item xs={6} sm={2}><NumberField label="Height" value={config.height} min={256} max={4096} step={8} onChange={(value) => set("height", value)} /></Grid>
             <Grid item xs={6} sm={2}><NumberField label="FPS" value={config.fps} min={1} max={60} onChange={(value) => set("fps", value)} /></Grid>
