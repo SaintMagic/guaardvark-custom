@@ -212,7 +212,13 @@ export const LTX_WORKFLOW_PRESETS = {
 export const mergeLtxConfig = (base, patch) => {
   const result = { ...base, ...patch };
   ["pass1", "pass2", "pass3", "nag", "rtx", "color_transfer", "watermark", "soundmark"].forEach((key) => {
-    if (patch[key]) result[key] = { ...(base[key] || {}), ...patch[key] };
+    const baseValue = base[key] && typeof base[key] === "object" && !Array.isArray(base[key]) ? base[key] : {};
+    const patchValue = patch[key] && typeof patch[key] === "object" && !Array.isArray(patch[key]) ? patch[key] : {};
+    result[key] = { ...baseValue, ...patchValue };
   });
+  if (!Array.isArray(result.loras)) result.loras = [];
+  if (!Array.isArray(result.timeline_segments)) result.timeline_segments = [];
+  if (!Array.isArray(result.motion_segments)) result.motion_segments = [];
+  if (!Array.isArray(result.audio_segments)) result.audio_segments = [];
   return result;
 };
