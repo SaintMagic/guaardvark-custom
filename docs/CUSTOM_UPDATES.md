@@ -1,6 +1,14 @@
 # Custom updates
 
-This document is the maintained summary of the downstream Guaardvark changes in this fork. It replaces scattered implementation notes and review summaries. Runtime state, model weights, credentials, audit dumps, and generated diffs remain local-only.
+This is the maintained, repository-level summary of the downstream Guaardvark changes in this fork. It consolidates the recent implementation and hardening work rather than describing only LTX. Runtime state, model weights, credentials, audit dumps, and generated diffs remain local-only.
+
+## Recent implementation history
+
+- `018375c` organized implementation notes under `docs/` and moved audit artifacts out of the tracked source tree.
+- `d220e95` routed LTX sequence work through the shared GPU session/lease and added repository revisions.
+- `16a55d8` replaced the LTX-only status note with this general custom-updates document.
+
+The feature work summarized here originated in the preceding LTX/runtime commits and is intentionally kept isolated from the existing WAN behavior.
 
 ## LTX Director
 
@@ -26,6 +34,23 @@ This document is the maintained summary of the downstream Guaardvark changes in 
 - Added safer launcher/service scripts and retained the current Edge WebView2 host path.
 - SageAttention/Triton options remain capability-gated; unsafe combinations default to the safe PyTorch path.
 
+## Launcher, platform, and service changes
+
+- Preserved the Windows-native launcher and native ComfyUI process while keeping the backend/frontend services in WSL.
+- Added/updated the native and GUI launch scripts, service health checks, startup reconciliation, stop handling, and external-ComfyUI URL/path normalization.
+- Kept the current Edge WebView2-based host path; the obsolete Qt/QWebEngine wrapper is not the active integration target.
+- Added safer dependency reconciliation and frontend build handling for the WSL-mounted workspace.
+- Kept GPU rendering serial through the shared resource policy/session rather than allowing independent LTX workers to compete with normal image/video work.
+
+## Image, video, and model-system changes
+
+- Extended the existing video generation path with capability-aware LTX routing while leaving WAN/CogVideo request behavior intact.
+- Preserved shared upload, gallery, history, retry, batch, and progress infrastructure instead of creating parallel systems for LTX.
+- Added LTX-specific frontend sections/components, presets, LoRA stack handling, file fields, sequence services, and API routing so the normal Video Generator page does not become an LTX conditional block.
+- Reused Cast/Subject metadata for generated keyframes, including the selected trained Subject LoRA and trigger phrase, with persistent keyframe asset metadata.
+- Kept the canonical model registry/downloader as the source of truth for model names, exact destinations, dependency readiness, and optional capability reporting.
+- GoldenLace is no longer an active LTX choice; the selected FP8 and GGUF LTX alternatives are represented instead. Existing local model files are not replaced or redownloaded automatically.
+
 ## Model and downloader changes
 
 - Extended the canonical video model registry with exact LTX destinations and shared dependencies.
@@ -40,8 +65,23 @@ This document is the maintained summary of the downstream Guaardvark changes in 
 - Added generated/target unit counts and frame-weighted sequence percentages.
 - Preserved existing WAN, batch-video, retry, and gallery paths.
 
-## Verification
+## Documentation and repository hygiene
+
+- Maintained project notes are under `docs/`, including the implementation plan, local model notes, work log, and improvement backlog.
+- Historical audit reports and generated review diffs are kept in the local `obsolete diffs` archive and are not part of the public source history.
+- Ignore rules exclude secrets, local credentials, model weights, partial downloads, ComfyUI runtime/workflow state, caches, virtual environments, generated diffs, and other machine-specific artifacts.
+- The public fork does not contain `.env` values or the local `GUAARDVARK.md` handoff file.
+
+## Current verification and remaining work
 
 The focused LTX Python tests and frontend production build pass. These checks do not substitute for a live ComfyUI render. Before unattended use, capture and compare native ComfyUI `/prompt` and history payloads for FLF2V, then test a short fixed-seed 576×896 render with audio, upscale, NAG, and Bodyphysics disabled.
 
-Known remaining work is tracked here rather than in separate LTX-only documents: live FLF2V schema capture, robust ffprobe-based stitch normalization, richer child-job/revision UI, expanded race/cancellation/recovery tests, and native WebView2 taskbar progress.
+Remaining work is tracked here rather than in separate LTX-only documents:
+
+- capture and contract-test the native FLF2V payload before re-enabling FLF2V;
+- validate the native timeline/director payload before allowing timeline rendering;
+- add ffprobe-driven stitch normalization, duration, pixel-format, and audio validation;
+- expand child-job polling/history and revision-conflict UX in the frontend;
+- add focused tests for cancellation propagation, restart recovery, frame-weighted progress, failed-sequence state, save-before-render, Cast resolution, thread races, and incomplete stitching;
+- decide whether WebView2 taskbar progress can be integrated without destabilizing the current launcher, otherwise leave it explicitly deferred;
+- complete live ComfyUI contract validation; no full live FLF2V render is claimed by this document.
