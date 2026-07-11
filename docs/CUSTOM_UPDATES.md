@@ -23,6 +23,7 @@ The feature work summarized here originated in the preceding LTX/runtime commits
 - Cast keyframe generation resolves the selected trained Subject LoRA and trigger phrase through the existing Subject model.
 - Lightspeed and Quality profiles are explicit and use safe 576×896 defaults. Bodyphysics is off by default and warns when explicitly enabled.
 - FLF2V and Timeline rendering are intentionally gated until native ComfyUI payload schemas are captured and contract-tested.
+- Uploaded I2V images are now explicitly wired through `LoadImage` and `LTXVAddGuide` into the LTX latent path; filenames in timeline metadata alone are not treated as sufficient conditioning.
 
 ## ComfyUI and runtime integration
 

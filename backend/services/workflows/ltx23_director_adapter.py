@@ -27,6 +27,8 @@ REQUIRED_NODE_SCHEMAS: Dict[str, set[str]] = {
     },
     "LTXDirectorCropGuides": {"positive", "negative", "latent"},
     "LTXVConditioning": {"positive", "negative", "frame_rate"},
+    "LTXVAddGuide": {"positive", "negative", "vae", "latent", "image", "frame_idx", "strength"},
+    "LoadImage": {"image"},
     "LTXVLatentUpsampler": {"samples", "upscale_model", "vae"},
     "LTXVConcatAVLatent": {"video_latent", "audio_latent"},
     "LTXVSeparateAVLatent": {"av_latent"},
@@ -536,9 +538,34 @@ def build_ltx23_workflow(config: LTXDirectorConfig) -> Dict[str, Any]:
     w["conditioning"] = _node("CONDITIONING", "LTXVConditioning", {
         "positive": ["director", 1], "negative": ["negative", 0], "frame_rate": ["director", 6],
     })
+    # The timeline JSON records source references for the Director editor, but
+    # it is not itself an IMAGE/LATENT input.  Explicit guide nodes are
+    # required for API-mode I2V/FLF2V submissions; without them ComfyUI can
+    # legally run the empty latent branch and ignore the uploaded image.
+    guide_positive: List[Any] = ["conditioning", 0]
+    guide_negative: List[Any] = ["conditioning", 1]
+    guide_latent: List[Any] = ["director", 2]
+    if config.mode in {"i2v", "flf2v"} and config.source_image:
+        w["source_image"] = _node("SOURCE_IMAGE", "LoadImage", {"image": _asset_path(config.source_image)})
+        w["source_guide"] = _node("SOURCE_GUIDE", "LTXVAddGuide", {
+            "positive": guide_positive, "negative": guide_negative,
+            "vae": ["video_vae", 0], "latent": guide_latent,
+            "image": ["source_image", 0], "frame_idx": 0,
+            "strength": float(config.guide_strength),
+        })
+        guide_positive, guide_negative, guide_latent = ["source_guide", 0], ["source_guide", 1], ["source_guide", 2]
+    if config.mode == "flf2v" and config.last_frame:
+        w["last_frame"] = _node("LAST_FRAME", "LoadImage", {"image": _asset_path(config.last_frame)})
+        w["last_guide"] = _node("LAST_GUIDE", "LTXVAddGuide", {
+            "positive": guide_positive, "negative": guide_negative,
+            "vae": ["video_vae", 0], "latent": guide_latent,
+            "image": ["last_frame", 0], "frame_idx": max(0, config.total_frames - 1),
+            "strength": float(config.guide_strength),
+        })
+        guide_positive, guide_negative, guide_latent = ["last_guide", 0], ["last_guide", 1], ["last_guide", 2]
     w["guide1"] = _node("GUIDE_PASS1", "LTXDirectorGuide", {
-        "positive": ["conditioning", 0], "negative": ["conditioning", 1],
-        "vae": ["video_vae", 0], "latent": ["director", 2],
+        "positive": guide_positive, "negative": guide_negative,
+        "vae": ["video_vae", 0], "latent": guide_latent,
         "guide_data": ["director", 4], "motion_guide_data": ["director", 5],
         "model": ["director", 0]
     })

@@ -52,6 +52,28 @@ def test_director_prompt_timeline_and_source_round_trip():
     assert data["motionSegments"][0]["strength"] == 0.6
 
 
+def test_uploaded_i2v_image_is_wired_into_latent_guidance():
+    workflow = build_ltx23_workflow(config(source_image="input/first.png"))
+    source = workflow[find_role(workflow, "SOURCE_IMAGE")]
+    guide = workflow[find_role(workflow, "SOURCE_GUIDE")]
+    pass1 = workflow[find_role(workflow, "GUIDE_PASS1")]
+    assert source["class_type"] == "LoadImage"
+    assert source["inputs"]["image"] == "input\\first.png"
+    assert guide["class_type"] == "LTXVAddGuide"
+    assert guide["inputs"]["image"] == ["source_image", 0]
+    assert guide["inputs"]["frame_idx"] == 0
+    assert pass1["inputs"]["latent"] == ["source_guide", 2]
+
+
+def test_flf2v_wires_last_frame_at_final_aligned_frame():
+    workflow = build_ltx23_workflow(config(mode="flf2v", last_frame="input/last.png", duration_seconds=2, fps=24))
+    guide = workflow[find_role(workflow, "LAST_GUIDE")]
+    pass1 = workflow[find_role(workflow, "GUIDE_PASS1")]
+    assert guide["inputs"]["image"] == ["last_frame", 0]
+    assert guide["inputs"]["frame_idx"] == 47
+    assert pass1["inputs"]["latent"] == ["last_guide", 2]
+
+
 def test_pass_specific_sampling_values_reach_unique_roles():
     cfg = config(
         pass1={"enabled": True, "cfg": 1.25, "steps": 11, "scheduler": "simple", "denoise": 0.95},
