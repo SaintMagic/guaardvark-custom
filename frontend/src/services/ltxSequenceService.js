@@ -6,11 +6,17 @@ async function request(path, options = {}) {
     ...options,
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload?.error?.message || payload?.error || payload?.message || `Request failed (${response.status})`);
+  if (!response.ok) {
+    const error = new Error(payload?.error?.message || payload?.error || payload?.message || `Request failed (${response.status})`);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
+  }
   return payload.data ?? payload;
 }
 
 export const createSequence = (document) => request("", { method: "POST", body: JSON.stringify(document) });
+export const getSequence = (id) => request(`/${encodeURIComponent(id)}`);
 export const updateSequence = (id, document) => request(`/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(document) });
 export const renderSequence = (id) => request(`/${encodeURIComponent(id)}/render`, { method: "POST", body: "{}" });
 export const renderShot = (id, shotId, retry = false) => request(`/${encodeURIComponent(id)}/shots/${encodeURIComponent(shotId)}/${retry ? "retry" : "render"}`, { method: "POST", body: "{}" });

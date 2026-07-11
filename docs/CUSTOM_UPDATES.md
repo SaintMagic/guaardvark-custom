@@ -81,7 +81,7 @@ Remaining work is tracked here rather than in separate LTX-only documents:
 - capture and contract-test the native FLF2V payload before re-enabling FLF2V;
 - validate the native timeline/director payload before allowing timeline rendering;
 - add ffprobe-driven stitch normalization, duration, pixel-format, and audio validation;
-- expand child-job polling/history and revision-conflict UX in the frontend;
+- expand child-job polling/history and revision-conflict UX in the frontend; the editor now refreshes saved projects, polls backend state, preserves dirty drafts, and handles 409 conflicts safely;
 - add focused tests for cancellation propagation, restart recovery, frame-weighted progress, failed-sequence state, save-before-render, Cast resolution, thread races, and incomplete stitching;
 - decide whether WebView2 taskbar progress can be integrated without destabilizing the current launcher, otherwise leave it explicitly deferred;
 - complete live ComfyUI contract validation; no full live FLF2V render is claimed by this document.
