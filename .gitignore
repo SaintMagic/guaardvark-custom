@@ -247,6 +247,7 @@ GUAARDVARK.md
 /scripts/wsl_start_launcher_services.sh
 /AUDIT_DIFF*.md
 /LTX_DIRECTOR*.diff
+/obsolete diffs/
 /IMPLEMENTATION_PLAN.md
 /LTX WF files/
 /potential WF/
